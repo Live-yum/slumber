@@ -1,0 +1,31 @@
+[package]
+authors = {workspace = true}
+description = "Utitilies for console-based Slumber frontends. Not intended for external use."
+edition = {workspace = true}
+homepage = {workspace = true}
+keywords = {workspace = true}
+license = {workspace = true}
+name = "slumber_console"
+repository = {workspace = true}
+rust-version = {workspace = true}
+version = {workspace = true}
+
+[package.metadata.release]
+tag = false
+
+[dependencies]
+crossterm = {version = "0.29.0", default-features = false, features = ["bracketed-paste", "events", "windows"]}
+ratatui = {version = "0.30.0-alpha.5", default-features = false, features = ["crossterm", "underline-color"]}
+terminput = {workspace = true}
+terminput-crossterm = "0.4.0"
+tempfile = "3.23.0"
+unicode-segmentation = "1.12.0"
+unicode-width = "0.2.0"
+anyhow = {workspace = true}
+async-trait = {workspace = true}
+dialoguer = {workspace = true, features = ["password"]}
+slumber_core = {workspace = true}
+slumber_template = {workspace = true}
+slumber_util = {workspace = true}
+tokio = {workspace = true, features = ["sync"]}
+tracing = {workspace = true}

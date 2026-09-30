@@ -1,0 +1,47 @@
+[package]
+authors = {workspace = true}
+description = "Configuration for Slumber. Not intended for external use."
+edition = {workspace = true}
+homepage = {workspace = true}
+keywords = {workspace = true}
+license = {workspace = true}
+name = "slumber_config"
+repository = {workspace = true}
+rust-version = {workspace = true}
+version = {workspace = true}
+
+[dependencies]
+derive_more = {workspace = true, features = ["deref", "display"]}
+editor-command = "2.0.0"
+glob = {version = "0.3.2", optional = true}
+indexmap = {workspace = true, features = ["serde"]}
+itertools = {workspace = true}
+mime = {workspace = true, optional = true}
+ratatui-core = {version = "0.1.0-alpha.6", default-features = false, features = ["serde"], optional = true}
+schemars = {workspace = true, features = ["indexmap2"], optional = true}
+serde = {workspace = true, features = ["derive"]}
+serde_yaml = {workspace = true}
+slumber_util = {workspace = true}
+terminput = {workspace = true, optional = true}
+thiserror = {workspace = true}
+tracing = {workspace = true}
+
+[dev-dependencies]
+dirs = {workspace = true}
+env-lock = {workspace = true}
+pretty_assertions = {workspace = true}
+rstest = {workspace = true}
+serde_test = {workspace = true}
+slumber_util = {workspace = true, features = ["test"]}
+
+[features]
+default = ["tui"]
+schema = ["dep:schemars"]
+# TUI-specific config fields and dependencies are gated behind this flag
+tui = ["dep:glob", "dep:mime", "dep:ratatui-core", "dep:terminput"]
+
+[lints]
+workspace = true
+
+[package.metadata.release]
+tag = false

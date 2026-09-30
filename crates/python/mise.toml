@@ -1,0 +1,25 @@
+# Use uv for venv management and maturin to manage the Rust+Python glue
+
+[tools]
+"github:PyO3/maturin" = "1.9"
+uv = "0.8"
+python = "3.11"
+
+[tasks.dev]
+description = "Build the package in dev mode"
+sources = ["src/", "Cargo.toml", "pyproject.toml"]
+run = ["maturin develop"]
+
+[tasks.repl]
+depends = ["dev"]
+description = "Run dev.py and enter the Python REPL"
+run = ["uv run python -i dev.py"]
+
+[tasks.setup]
+description = "First-time project setup"
+run = "uv sync"
+
+[tasks.test-python]
+depends = ["dev"]
+description = "Run Python tests"
+run = "uv run pytest"

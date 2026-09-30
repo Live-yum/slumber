@@ -1,0 +1,41 @@
+@HOST = http://httpbin.org
+### SimpleGet
+
+GET {{ HOST}}/get HTTP/1.1
+
+/// Another comment
+
+###
+# @name JsonPost
+@FIRST=Joe
+@LAST=Smith
+@FULL={{ FIRST }} {{LAST}}
+
+POST {{HOST}}/post?hello=123 HTTP/1.1
+authorization: Basic Zm9vOmJhcg==
+content-type: application/json
+x-http-method-override: PUT
+
+{
+    "data": "my data",
+    "name": "{{FULL}}"
+}
+
+
+#######
+@ENDPOINT = post
+
+POST https://httpbin.org/{{ENDPOINT}} HTTP/1.1
+authorization: Bearer efaxijasdfjasdfa
+content-type: application/x-www-form-urlencoded
+my-header: hello
+other-header: goodbye
+
+first={{ FIRST}}&last={{LAST}}&full={{FULL}}
+
+### Pet.json
+
+POST {{HOST}}/post HTTP/1.1
+content-type: application/json
+
+< ./test_data/rest_pets.json

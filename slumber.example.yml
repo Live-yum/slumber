@@ -1,0 +1,197 @@
+name: 原生加解密 · 演示服务 A 与 B（仅本机虚构数据）
+
+# yaml-language-server: $schema=./schemas/collection.json
+# 复制为 slumber.yml 后使用；该本地副本已被 Git 忽略。
+# 公开测试密钥；真实部署请编辑个人副本，勿提交真实密钥。
+crypto:
+  am:
+    algorithm: aes-128-cbc
+    padding: pkcs7
+    key: {value: '0123456789abcdef', encoding: utf8}
+    iv: {value: '0123456789abcdef', encoding: utf8}
+    plaintext_encoding: utf8
+    ciphertext_encoding: base64
+  demo_b:
+    algorithm: aes-128-cbc
+    padding: pkcs7
+    key: {value: '0123456789abcdef', encoding: utf8}
+    iv: {value: 'fedcba9876543210', encoding: utf8}
+    plaintext_encoding: utf8
+    ciphertext_encoding: base64
+    base64_decode: {ignore_ascii_whitespace: true, allow_missing_padding: true}
+
+profiles:
+  local:
+    default: true
+    data:
+      am_base_url: http://127.0.0.1:18080
+      gateway_url: http://127.0.0.1:18080
+      demo_b_base_url: http://127.0.0.1:18080
+      client_id: DEMO-CLIENT
+      client_secret: "{{ 'DEMO-SECRET' | sensitive() }}"
+      username: demo
+      password: "{{ 'public-password' | sensitive() }}"
+      destination: DEMO-SITE
+      # 非真实个人信息，仅用于验证字符串加解密。
+      phone: '00000000000'
+      idcard_no: '000000000000000000'
+      am_token: "{{ response('am_login', trigger='no_history') | jsonpath('$.access_token') | sensitive() }}"
+      # jq() 是内建 Rust 模板函数，不运行外部 jq。
+      demo_b_token: >-
+        {{ response('demo_b_login', trigger='no_history', view='transformed')
+           | jq('if .code == 0 and (.token | type) == "string" and .token != "" then .token else error("invalid login response") end')
+           | sensitive() }}
+
+requests:
+  am_login:
+    name: AM 登录 · 普通表单（非 AES）
+    method: POST
+    url: '{{ am_base_url }}/api/auth/oauth/user/noValidCode/token'
+    persist: false
+    headers: {client_id: '{{ client_id }}', client_secret: '{{ client_secret }}'}
+    body:
+      type: form_urlencoded
+      data: {username: '{{ username }}', password: '{{ password }}'}
+
+  am_persons:
+    name: AM 人员查询 · phone/idcardNo 自动解密
+    method: GET
+    url: '{{ am_base_url }}/api/am/apiUser/getAllUserInfo'
+    persist: false
+    authentication: {type: bearer, token: '{{ am_token }}'}
+    headers: {Accept: application/json}
+    query: {destination: '{{ destination }}', pageNum: '1', pageSize: '100'}
+    response_transform:
+      - type: decrypt
+        crypto: am
+        paths: ['$.data.list[*].phone', '$.data.list[*].idcardNo']
+        skip_missing: true
+        skip_null: true
+        skip_blank: true
+
+  am_persons_string_list:
+    name: AM · data.list 是 JSON 字符串的明确处理
+    method: GET
+    url: '{{ am_base_url }}/mock/am-persons-string'
+    persist: false
+    authentication: {type: bearer, token: '{{ am_token }}'}
+    response_transform:
+      - type: parse_json
+        paths: ['$.data.list']
+      - type: decrypt
+        crypto: am
+        paths: ['$.data.list[*].phone', '$.data.list[*].idcardNo']
+        skip_missing: true
+        skip_null: true
+        skip_blank: true
+
+  am_push_person:
+    name: 【写入】AM 单人推送 · 示例只指向本机
+    method: POST
+    url: '{{ gateway_url }}/personaccess/open/am/person'
+    persist: false
+    body:
+      type: json
+      data:
+        userId: DEMO-001
+        fullName: 测试人员
+        phone: "{{ phone | encrypt('am') }}"
+        idcardNo: "{{ idcard_no | encrypt('am') }}"
+        affiliatedTerminal: '{{ destination }}'
+        destination: '{{ destination }}'
+
+  am_push_array:
+    name: 【写入】AM 非空数组推送 · 示例只指向本机
+    method: POST
+    url: '{{ gateway_url }}/personaccess/open/am/person'
+    persist: false
+    body:
+      type: json
+      data:
+        - userId: DEMO-001
+          fullName: 测试人员
+          phone: "{{ phone | encrypt('am') }}"
+          idcardNo: "{{ idcard_no | encrypt('am') }}"
+
+  encrypted_parameters:
+    name: 本地 query/header · 保留 Base64 的 + / =
+    method: GET
+    url: '{{ am_base_url }}/parameters'
+    persist: false
+    query: {encrypted: "{{ '' | encrypt('am') }}"}
+    headers: {x-encrypted: "{{ '' | encrypt('am') }}"}
+
+  demo_b_login:
+    name: 服务 B 登录 · query user/pass，整包解码
+    method: GET
+    url: '{{ demo_b_base_url }}/api/userlogin'
+    persist: false
+    query: {user: '{{ username }}', pass: '{{ password }}'}
+    response_transform: &demo_b_body
+      - type: decode
+        crypto: demo_b
+        scope: body
+        parse: json
+        text_encoding: utf8-sig
+
+  demo_b_realdata:
+    name: 服务 B 实时查询 · 自动登录、query token
+    method: GET
+    url: '{{ demo_b_base_url }}/api/realdata'
+    persist: false
+    query: {names: 'A1.PV,A2.DESC', token: '{{ demo_b_token }}'}
+    response_transform: *demo_b_body
+
+  demo_b_realdir:
+    name: 服务 B 目录 · items 响应不强制 code
+    method: GET
+    url: '{{ demo_b_base_url }}/api/realdir'
+    persist: false
+    query: {token: '{{ demo_b_token }}'}
+    response_transform: *demo_b_body
+
+  demo_b_hisdata:
+    name: 服务 B 历史查询
+    method: GET
+    url: '{{ demo_b_base_url }}/api/hisdata'
+    persist: false
+    query:
+      names: A1.PV
+      startTime: '2026-01-01 00:00:00'
+      endTime: '2026-01-01 01:00:00'
+      interval: '60'
+      token: '{{ demo_b_token }}'
+    response_transform: *demo_b_body
+
+  demo_b_alarmdata:
+    name: 服务 B 报警查询
+    method: GET
+    url: '{{ demo_b_base_url }}/api/alarmdata'
+    persist: false
+    query: {token: '{{ demo_b_token }}'}
+    response_transform: *demo_b_body
+
+  demo_b_logout:
+    name: 【状态变更】服务 B 登出 · 手动执行
+    method: GET
+    url: '{{ demo_b_base_url }}/api/userlogout'
+    persist: false
+    query: {token: '{{ demo_b_token }}'}
+    response_transform: *demo_b_body
+
+  encrypted_echo_demo:
+    name: 仅本地模拟 · 整个 JSON 文件编码/加密后发送
+    method: POST
+    url: '{{ demo_b_base_url }}/encrypted-echo'
+    persist: false
+    headers: {Content-Type: text/plain}
+    # Slumber 5.3 原生 raw body 语法：直接填写模板，而非 type: raw。
+    body: "{{ file('examples/native-crypto/demo-request.plain.json') | encode('demo_b') }}"
+    response_transform: *demo_b_body
+
+  plain_json_echo:
+    name: 本地普通 JSON · 不受全局 codec 影响
+    method: POST
+    url: '{{ demo_b_base_url }}/plain-echo'
+    persist: false
+    body: {type: json, data: {message: 普通 JSON 原样发送}}

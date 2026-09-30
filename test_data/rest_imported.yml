@@ -1,0 +1,60 @@
+profiles:
+  http_file:
+    name: Jetbrains HTTP File
+    default: true
+    data:
+      HOST: http://httpbin.org
+      FIRST: Joe
+      LAST: Smith
+      FULL: "{{ FIRST }} {{ LAST }}"
+      ENDPOINT: post
+
+requests:
+  SimpleGet_0:
+    name: SimpleGet
+    method: GET
+    url: "{{ HOST }}/get"
+    body: null
+    authentication: null
+    query: {}
+    headers: {}
+  JsonPost_1:
+    name: JsonPost
+    method: POST
+    url: "{{ HOST }}/post"
+    body:
+      type: json
+      data:
+        data: my data
+        name: "{{ FULL }}"
+    authentication:
+      type: basic
+      username: foo
+      password: bar
+    query:
+      hello: 123
+    headers:
+      Content-Type: application/json
+      X-Http-Method-Override: PUT
+  Request_2:
+    name: Request
+    method: POST
+    url: https://httpbin.org/{{ ENDPOINT }}
+    body: first={{ FIRST }}&last={{ LAST }}&full={{ FULL }}
+    authentication:
+      type: bearer
+      token: efaxijasdfjasdfa
+    query: {}
+    headers:
+      Content-Type: application/x-www-form-urlencoded
+      My-Header: hello
+      Other-Header: goodbye
+  Pet_json_3:
+    name: Pet.json
+    method: POST
+    url: "{{ HOST }}/post"
+    body: "{{ file('./test_data/rest_pets.json') }}"
+    authentication: null
+    query: {}
+    headers:
+      Content-Type: application/json

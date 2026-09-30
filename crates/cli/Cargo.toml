@@ -1,0 +1,65 @@
+[package]
+authors = {workspace = true}
+description = "Command line interface for Slumber. Not intended for external use."
+edition = {workspace = true}
+homepage = {workspace = true}
+keywords = {workspace = true}
+license = {workspace = true}
+name = "slumber_cli"
+repository = {workspace = true}
+rust-version = {workspace = true}
+version = {workspace = true}
+
+[[bin]]
+name = "slumber_cli"
+path = "src/bin.rs"
+
+[dependencies]
+tempfile = "3.23.0"
+anyhow = {workspace = true}
+async-trait = {workspace = true}
+chrono = {workspace = true}
+clap = {workspace = true, features = ["derive"]}
+clap_complete = {version = "4.5.29", features = ["unstable-dynamic"]}
+indexmap = {workspace = true}
+itertools = {workspace = true}
+reqwest = {workspace = true}
+schemars = {workspace = true, optional = true}
+serde = {workspace = true}
+serde_json = {workspace = true}
+serde_yaml = {workspace = true}
+slumber_config = {workspace = true}
+slumber_console = {workspace = true}
+slumber_core = {workspace = true}
+slumber_import = {workspace = true, optional = true}
+slumber_template = {workspace = true}
+slumber_util = {workspace = true}
+tokio = {workspace = true, features = ["rt", "macros"]}
+tracing = {workspace = true}
+url = {workspace = true}
+
+[dev-dependencies]
+assert_cmd = "2.0.16"
+env-lock = {workspace = true}
+predicates = {version = "3.1.3", default-features = false}
+pretty_assertions = {workspace = true}
+rstest = {workspace = true}
+serde_json = {workspace = true}
+serde_urlencoded = "0.7.1"
+slumber_core = {workspace = true, features = ["test"]}
+slumber_util = {workspace = true, features = ["test"]}
+uuid = {workspace = true}
+wiremock = {workspace = true}
+
+[features]
+# Import can be disabled in dev for speed. It has a big dep tree
+import = ["dep:slumber_import"]
+
+[lints]
+workspace = true
+
+[package.metadata.release]
+tag = false
+
+[package.metadata.dist]
+dist = false

@@ -1,0 +1,204 @@
+name: Native crypto and portable builds
+
+on:
+  push:
+    branches: [fix/builtin-tools]
+  pull_request:
+    branches: [master]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: native-crypto-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  prepare:
+    name: Archive exact source and cancel superseded runs
+    if: github.event_name == 'push' && github.repository == 'Live-yum/slumber' && github.ref == 'refs/heads/fix/builtin-tools'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      actions: write
+    outputs:
+      sha: ${{ steps.source.outputs.sha }}
+    steps:
+      - name: Cancel superseded runs on this development branch only
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const runs = await github.paginate(github.rest.actions.listWorkflowRunsForRepo, {
+              ...context.repo, branch: 'fix/builtin-tools', per_page: 100
+            });
+            for (const run of runs) {
+              if (run.id !== context.runId && run.head_sha !== context.sha &&
+                  ['queued', 'in_progress', 'waiting', 'pending', 'requested'].includes(run.status)) {
+                await github.rest.actions.cancelWorkflowRun({...context.repo, run_id: run.id})
+                  .catch(error => core.info(`Run ${run.id}: ${error.message}`));
+              }
+            }
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Record and archive checked-in source without changing the branch
+        id: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          test ! -f scripts/prepare_builtin_tools.py
+          git diff --exit-code
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          git archive --format=tar.gz --output=native-tools-source.tar.gz HEAD
+      - uses: actions/upload-artifact@v4
+        with:
+          name: native-tools-source
+          path: native-tools-source.tar.gz
+          retention-days: 14
+
+  quality:
+    name: Formatting and locked schemas
+    needs: prepare
+    if: always() && !cancelled() && (needs.prepare.result == 'success' || needs.prepare.result == 'skipped')
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.sha || github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+      - run: rustup toolchain install nightly-2026-02-20 --profile minimal --component rustfmt
+      - run: cargo +nightly-2026-02-20 fmt --all -- --check
+      - run: cargo run --locked -p slumber_core --features schema --example native_crypto_schema -- --check
+
+  test-package:
+    name: Test and package ${{ matrix.target }}
+    needs: prepare
+    if: always() && !cancelled() && (needs.prepare.result == 'success' || needs.prepare.result == 'skipped')
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-2025
+            target: x86_64-pc-windows-msvc
+            executable: slumber.exe
+          - os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-musl
+            executable: slumber
+          - os: ubuntu-24.04
+            target: x86_64-unknown-linux-musl
+            executable: slumber
+    runs-on: ${{ matrix.os }}
+    env:
+      CARGO_INCREMENTAL: 0
+      CARGO_PROFILE_RELEASE_STRIP: symbols
+      RUST_BACKTRACE: 1
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.sha || github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: native-crypto-${{ matrix.target }}
+          cache-on-failure: true
+      - name: Linux musl build tools
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y musl-tools cmake ninja-build
+      - run: rustup target add ${{ matrix.target }}
+      - name: Clippy including integration tests
+        shell: bash
+        run: |
+          set +e
+          cargo clippy --workspace --exclude slumber_python --all-targets --all-features --locked > clippy.log 2>&1
+          status=$?
+          tail -200 clippy.log
+          exit "$status"
+      - name: Workspace regression and TUI event-loop tests
+        shell: bash
+        run: |
+          set +e
+          cargo test --workspace --exclude slumber_python --locked --no-fail-fast > tests.log 2>&1
+          status=$?
+          tail -240 tests.log
+          exit "$status"
+      - name: Native editing with deliberately unavailable external tools
+        env:
+          EDITOR: slumber-test-missing-editor
+          VISUAL: slumber-test-missing-editor
+          PAGER: slumber-test-missing-pager
+        run: cargo test --locked -p slumber_tui --test test_builtin_tools
+      - name: Build complete application with import CLI and TUI
+        env:
+          CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_RUSTFLAGS: -C target-feature=+crt-static
+          CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER: musl-gcc
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER: musl-gcc
+        run: cargo build --release --locked --target ${{ matrix.target }} -p slumber
+      - name: Install development-only protocol test dependencies
+        run: python -m pip install cryptography PyYAML
+      - name: Install development-only terminal harness
+        shell: bash
+        run: |
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            python -m pip install pywinpty pyte==0.8.2
+          else
+            python -m pip install ptyprocess pyte==0.8.2
+          fi
+      - name: Real executable terminal editing with empty PATH (three repetitions)
+        shell: bash
+        run: |
+          set -euo pipefail
+          for attempt in 1 2 3; do
+            python scripts/builtin_terminal_smoke.py --binary target/${{ matrix.target }}/release/${{ matrix.executable }}
+            mv builtin-terminal.log "builtin-terminal-${attempt}.log"
+          done
+      - name: Native protocol and SQL smoke with empty child PATH
+        run: python scripts/native_crypto_smoke.py --binary target/${{ matrix.target }}/release/${{ matrix.executable }}
+      - name: Audit real executable dependencies and package with SHA256
+        run: python scripts/package_native_crypto.py --binary target/${{ matrix.target }}/release/${{ matrix.executable }} --target ${{ matrix.target }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: native-crypto-${{ matrix.target }}
+          path: dist/native-crypto/*
+          if-no-files-found: error
+          retention-days: 30
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: validation-logs-${{ matrix.target }}
+          path: |
+            clippy.log
+            tests.log
+            builtin-terminal*.log
+          retention-days: 14
+
+  publish:
+    name: Publish verified native tools prerelease
+    needs: [prepare, quality, test-package]
+    if: github.event_name == 'push' && github.repository == 'Live-yum/slumber' && github.ref == 'refs/heads/fix/builtin-tools' && contains(github.event.head_commit.message, '[publish-builtin]')
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.sha || github.sha }}
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: native-crypto-*-*-*
+          path: artifacts
+          merge-multiple: true
+      - name: Publish only the tested current commit as a new version
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TESTED_SHA: ${{ needs.prepare.outputs.sha || github.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          head=$(gh api repos/Live-yum/slumber/git/ref/heads/fix/builtin-tools --jq .object.sha)
+          test "$head" = "$TESTED_SHA"
+          gh release create v5.3.0-crypto.3 artifacts/* --repo Live-yum/slumber --target "$TESTED_SHA" --prerelease --title 'Slumber 5.3.0 Native Crypto 3 - Built-in Tools and Quick Start' --notes-file docs/builtin-tools-zh.md

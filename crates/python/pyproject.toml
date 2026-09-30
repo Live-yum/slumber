@@ -1,0 +1,46 @@
+[build-system]
+requires = ["maturin>=1.9,<2.0"]
+build-backend = "maturin"
+
+[project]
+name = "slumber-python"
+readme = "README.md"
+requires-python = ">=3.10"
+classifiers = [
+    "Programming Language :: Rust",
+    "Programming Language :: Python :: Implementation :: CPython",
+    "Programming Language :: Python :: Implementation :: PyPy",
+]
+dynamic = [
+    # Pull everything in from Cargo.toml
+    "version",
+    "summary",
+    "description",
+    "description_content_type",
+    "home_page",
+    "author",
+    "author_email",
+    "license",
+    "project_url",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.4.2",
+    "pytest-asyncio>=1.2.0",
+    "pytest-httpserver>=1.1.3",
+]
+
+[tool.maturin]
+features = ["pyo3/extension-module"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests/**/*.py"]
+
+[tool.ruff]
+line-length = 80
+
+[tool.uv]
+package = false
+python-preference = "only-system"

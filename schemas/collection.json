@@ -1,0 +1,761 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Collection",
+  "description": "A collection of profiles, requests, etc. This is the primary Slumber unit\nof configuration.",
+  "type": "object",
+  "properties": {
+    "crypto": {
+      "description": "Named native codecs, resolved lazily in the selected profile.",
+      "type": "object",
+      "additionalProperties": {
+        "$ref": "#/$defs/CryptoConfig"
+      }
+    },
+    "name": {
+      "description": "Descriptive name for the collection",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "profiles": {
+      "description": "Map of profiles, keyed by their unique IDs",
+      "type": "object",
+      "additionalProperties": {
+        "$ref": "#/$defs/Profile"
+      }
+    },
+    "requests": {
+      "description": "Map of requests and folders, keyed by their unique IDs. Folders allow\nfor nested maps of more requests and folders. All IDs must be unique\n**throughout the entire tree**, not just at their level.",
+      "$ref": "#/$defs/RecipeTree"
+    }
+  },
+  "required": [
+    "profiles",
+    "requests"
+  ],
+  "examples": [
+    {
+      "name": "Example",
+      "profiles": {
+        "local": {
+          "name": "Local",
+          "default": true,
+          "data": {
+            "host": "http://localhost:8000"
+          }
+        },
+        "remote": {
+          "name": "Remote",
+          "data": {
+            "host": "https://myfishes.fish"
+          }
+        }
+      },
+      "requests": {
+        "my_recipe": {
+          "name": "My Recipe",
+          "method": "POST",
+          "url": "http://localhost:8000/fish",
+          "body": {
+            "type": "json",
+            "data": {
+              "name": "Barry",
+              "species": "Barracuda"
+            }
+          },
+          "authentication": {
+            "type": "basic",
+            "username": "mememe",
+            "password": "{{ prompt(message='Password', sensitive=true) }}"
+          },
+          "query": {
+            "submit": "true",
+            "param_with_multiple_values": [
+              "value1",
+              "value2"
+            ]
+          },
+          "headers": {
+            "Accept": "application/json"
+          }
+        },
+        "my_folder": {
+          "name": "My Folder",
+          "requests": {
+            "recipe1": {
+              "method": "GET",
+              "url": "http://localhost/url"
+            },
+            "recipe2": {
+              "method": "GET",
+              "url": "http://localhost/url"
+            }
+          }
+        }
+      }
+    }
+  ],
+  "patternProperties": {
+    "^\\.": {
+      "description": "Ignore any property beginning with `.`"
+    }
+  },
+  "$defs": {
+    "CryptoConfig": {
+      "type": "object",
+      "properties": {
+        "algorithm": {
+          "$ref": "#/$defs/Algorithm"
+        },
+        "key": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Material"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "iv": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Material"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "padding": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Padding"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "plaintext_encoding": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PlaintextEncoding"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "ciphertext_encoding": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Transport"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "base64_decode": {
+          "$ref": "#/$defs/Base64Decode",
+          "default": {
+            "ignore_ascii_whitespace": false,
+            "allow_missing_padding": false
+          }
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "algorithm"
+      ]
+    },
+    "Algorithm": {
+      "type": "string",
+      "enum": [
+        "none",
+        "base64",
+        "base64url",
+        "aes-128-cbc",
+        "aes-192-cbc",
+        "aes-256-cbc",
+        "aes-128-ecb",
+        "aes-192-ecb",
+        "aes-256-ecb"
+      ]
+    },
+    "Material": {
+      "description": "Literal or templated material. Debug output always redacts its source.",
+      "type": "object",
+      "properties": {
+        "value": {
+          "$ref": "#/$defs/Template"
+        },
+        "encoding": {
+          "$ref": "#/$defs/MaterialEncoding",
+          "default": "utf8"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "value"
+      ]
+    },
+    "Template": {
+      "type": [
+        "string",
+        "boolean",
+        "number"
+      ]
+    },
+    "MaterialEncoding": {
+      "type": "string",
+      "enum": [
+        "utf8",
+        "text",
+        "hex",
+        "base64"
+      ]
+    },
+    "Padding": {
+      "type": "string",
+      "enum": [
+        "pkcs7"
+      ]
+    },
+    "PlaintextEncoding": {
+      "type": "string",
+      "enum": [
+        "utf8"
+      ]
+    },
+    "Transport": {
+      "type": "string",
+      "enum": [
+        "base64",
+        "base64url"
+      ]
+    },
+    "Base64Decode": {
+      "type": "object",
+      "properties": {
+        "ignore_ascii_whitespace": {
+          "type": "boolean",
+          "default": false
+        },
+        "allow_missing_padding": {
+          "type": "boolean",
+          "default": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "Profile": {
+      "description": "Mutually exclusive hot-swappable config group",
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "default": {
+          "description": "For the CLI, use this profile when no `--profile` flag is passed. For\nthe TUI, select this profile by default from the list. Only one profile\nin the collection can be marked as default. This is enforced by a\ncustom deserializer function.",
+          "type": "boolean"
+        },
+        "data": {
+          "description": "Arbitrary data that can be used in templates",
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/ValueTemplate"
+          }
+        }
+      },
+      "required": [
+        "data"
+      ],
+      "examples": [
+        {
+          "name": "Local",
+          "default": true,
+          "data": {
+            "host": "http://localhost:8000"
+          }
+        }
+      ]
+    },
+    "ValueTemplate": {
+      "description": "A templated [Value]\n\nThis is a [Value], except the strings are templates. That means this can be\ndynamically rendered to a [Value]. This is used for structured bodies (e.g.\nJSON) as well as profile fields.",
+      "anyOf": [
+        {
+          "type": "null"
+        },
+        {
+          "type": "boolean"
+        },
+        {
+          "type": "integer",
+          "format": "int64"
+        },
+        {
+          "type": "number",
+          "format": "double"
+        },
+        {
+          "type": "number",
+          "format": "double"
+        },
+        {
+          "description": "An unpacked single-chunk template",
+          "type": "string"
+        },
+        {
+          "description": "A template that has not been unpacked\n\nThis is either a single raw chunk or a multi-chunk template",
+          "$ref": "#/$defs/Template"
+        },
+        {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ValueTemplate"
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/ValueTemplate"
+          }
+        }
+      ]
+    },
+    "RecipeTree": {
+      "description": "A folder/recipe tree. This is exactly what the user inputs in their\ncollection file. IDs in this tree are **globally** unique, meaning no two\nnodes can have the same ID anywhere in the tree, even between folders and\nrecipes. This is a mild restriction on the user that makes implementing a\nlot simpler. In reality it's unlikely they would want to give two things\nthe same ID anyway.",
+      "type": "object",
+      "additionalProperties": {
+        "$ref": "#/$defs/RecipeNode"
+      }
+    },
+    "RecipeNode": {
+      "description": "A node in the recipe tree, either a folder or recipe",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Folder"
+        },
+        {
+          "$ref": "#/$defs/Recipe"
+        }
+      ]
+    },
+    "Folder": {
+      "description": "A gathering of like-minded recipes and/or folders",
+      "type": "object",
+      "properties": {
+        "name": {
+          "description": "Display name",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "requests": {
+          "description": "Child requests of this folder",
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/RecipeNode"
+          }
+        }
+      },
+      "required": [
+        "requests"
+      ],
+      "examples": [
+        {
+          "name": "My Folder",
+          "requests": {
+            "my_recipe": {
+              "name": "My Recipe",
+              "method": "POST",
+              "url": "http://localhost:8000/fish",
+              "body": {
+                "type": "json",
+                "data": {
+                  "name": "Barry",
+                  "species": "Barracuda"
+                }
+              },
+              "authentication": {
+                "type": "basic",
+                "username": "mememe",
+                "password": "{{ prompt(message='Password', sensitive=true) }}"
+              },
+              "query": {
+                "submit": "true",
+                "param_with_multiple_values": [
+                  "value1",
+                  "value2"
+                ]
+              },
+              "headers": {
+                "Accept": "application/json"
+              }
+            }
+          }
+        }
+      ]
+    },
+    "Recipe": {
+      "description": "A definition of how to build an HTTP request. This is also commonly called\n\"request\" throughout Slumber documentation because that term is more common\nand intuitive.",
+      "type": "object",
+      "properties": {
+        "response_transform": {
+          "description": "Ordered transforms for an ephemeral response view. History remains raw.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ResponseTransform"
+          }
+        },
+        "persist": {
+          "description": "Should requests and responses of this recipe be persisted in the local\nSlumber database?\n[See docs](https://slumber.lucaspickering.me/book/user_guide/database.html)\nfor more info",
+          "type": "boolean"
+        },
+        "name": {
+          "description": "Display name",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "method": {
+          "description": "[HTTP request method](https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Methods)",
+          "$ref": "#/$defs/HttpMethod"
+        },
+        "url": {
+          "description": "[HTTP request URL](https://developer.mozilla.org/en-US/docs/Learn_web_development/Howto/Web_mechanics/What_is_a_URL)\n\nQuery parameters *can* be included here, but typically it's easier to\nuse the `query` field instead.",
+          "$ref": "#/$defs/Template"
+        },
+        "body": {
+          "description": "HTTP request body\n\n- `type: json`: `application/json` body\n- `type: form_urlencoded`: `application/x-www-form-urlencoded` body\n- `type: form_multipart`: `multipart/form-data` body\n- Any template can be given to define the literal request body\n  text/bytes. In this case, consider including a\n  [`Content-Type` header](https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Headers/Content-Type)\n  to tell the server what type of content you're sending.\n\nSee individual variants for more details on usage.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RecipeBody"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "authentication": {
+          "description": "HTTP authentication scheme\n\n- `type: basic`: [Basic authentication](https://swagger.io/docs/specification/v3_0/authentication/basic-authentication/)\n- `type: bearer`: [Bearer authentication](https://swagger.io/docs/specification/v3_0/authentication/bearer-authentication/)\n\nSee individual variants for more details on usage.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Authentication"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "query": {
+          "description": "A map of [URL query parameters](https://developer.mozilla.org/en-US/docs/Learn_web_development/Howto/Web_mechanics/What_is_a_URL#parameters).\nEach value can either be a single value (`?foo=bar`) or multiple\n(`?foo=bar&foo=baz`)",
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/QueryParameterValue"
+          }
+        },
+        "headers": {
+          "description": "A map of [HTTP request headers](https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Headers)",
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/Template"
+          }
+        }
+      },
+      "required": [
+        "method",
+        "url"
+      ],
+      "examples": [
+        {
+          "name": "My Recipe",
+          "method": "POST",
+          "url": "http://localhost:8000/fish",
+          "body": {
+            "type": "json",
+            "data": {
+              "name": "Barry",
+              "species": "Barracuda"
+            }
+          },
+          "authentication": {
+            "type": "basic",
+            "username": "mememe",
+            "password": "{{ prompt(message='Password', sensitive=true) }}"
+          },
+          "query": {
+            "submit": "true",
+            "param_with_multiple_values": [
+              "value1",
+              "value2"
+            ]
+          },
+          "headers": {
+            "Accept": "application/json"
+          }
+        }
+      ]
+    },
+    "ResponseTransform": {
+      "description": "Ordered, transactional transforms for an in-memory view of a response.",
+      "type": "object",
+      "properties": {
+        "type": {
+          "$ref": "#/$defs/TransformKind"
+        },
+        "crypto": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "scope": {
+          "$ref": "#/$defs/TransformScope",
+          "default": "fields"
+        },
+        "paths": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "skip_missing": {
+          "type": "boolean",
+          "default": false
+        },
+        "skip_null": {
+          "type": "boolean",
+          "default": false
+        },
+        "skip_blank": {
+          "type": "boolean",
+          "default": false
+        },
+        "parse": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ParseAs"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "text_encoding": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TextEncoding"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "type"
+      ]
+    },
+    "TransformKind": {
+      "type": "string",
+      "enum": [
+        "decode",
+        "decrypt",
+        "parse_json"
+      ]
+    },
+    "TransformScope": {
+      "type": "string",
+      "enum": [
+        "fields",
+        "body"
+      ]
+    },
+    "ParseAs": {
+      "type": "string",
+      "enum": [
+        "json"
+      ]
+    },
+    "TextEncoding": {
+      "type": "string",
+      "enum": [
+        "utf8",
+        "utf8-sig"
+      ]
+    },
+    "HttpMethod": {
+      "description": "[HTTP request method](https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Methods)",
+      "type": "string",
+      "enum": [
+        "CONNECT",
+        "DELETE",
+        "GET",
+        "HEAD",
+        "OPTIONS",
+        "PATCH",
+        "POST",
+        "PUT",
+        "TRACE"
+      ]
+    },
+    "RecipeBody": {
+      "description": "Template for a request body. `Raw` is the \"default\" variant, which\nrepresents a single string (parsed as a template). Other variants can be\nused for convenience, to construct complex bodies in common formats. The\nHTTP engine uses the variant to determine not only how to serialize the\nbody, but also other parameters of the request (e.g. the `Content-Type`\nheader).",
+      "anyOf": [
+        {
+          "description": "`application/json` body. Value can be any JSON value, with strings being\ninterpreted as templates",
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "json"
+            },
+            "data": {
+              "$ref": "#/$defs/ValueTemplate"
+            }
+          },
+          "required": [
+            "type",
+            "data"
+          ]
+        },
+        {
+          "description": "`application/x-www-form-urlencoded` body. Value is a mapping of form\nfield name to value. Values are templates while field names are not.\nValues must render to strings.",
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "form_urlencoded"
+            },
+            "data": {
+              "type": "object",
+              "additionalProperties": {
+                "$ref": "#/$defs/Template"
+              }
+            }
+          },
+          "required": [
+            "type",
+            "data"
+          ]
+        },
+        {
+          "description": "`multipart/form-data` body. Value is a mapping of form field\nname to value. Values are templates while field names are not. Values\ncan render to any bytes.",
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "form_multipart"
+            },
+            "data": {
+              "type": "object",
+              "additionalProperties": {
+                "$ref": "#/$defs/Template"
+              }
+            }
+          },
+          "required": [
+            "type",
+            "data"
+          ]
+        },
+        {
+          "description": "Plain body, but the bytes will be streamed instead of being loaded\ninto memory",
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "stream"
+            },
+            "data": {
+              "$ref": "#/$defs/Template"
+            }
+          },
+          "required": [
+            "type",
+            "data"
+          ]
+        },
+        {
+          "description": "Plain string/bytes body. Must be the last variant to support untagged.\nThis captures any value that doesn't fit one of the above variants.",
+          "$ref": "#/$defs/Template"
+        }
+      ]
+    },
+    "Authentication": {
+      "description": "Shortcut for defining authentication method. If this is defined in addition\nto the `Authorization` header, that header will end up being included in the\nrequest twice.\n\nType parameter allows this to be re-used for post-render purposes (with\n`T=String`).",
+      "oneOf": [
+        {
+          "description": "`Authorization: Basic {username:password | base64}`",
+          "type": "object",
+          "properties": {
+            "username": {
+              "$ref": "#/$defs/Template"
+            },
+            "password": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/Template"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "type": {
+              "type": "string",
+              "const": "basic"
+            }
+          },
+          "required": [
+            "type",
+            "username"
+          ]
+        },
+        {
+          "description": "`Authorization: Bearer {token}`",
+          "type": "object",
+          "properties": {
+            "token": {
+              "$ref": "#/$defs/Template"
+            },
+            "type": {
+              "type": "string",
+              "const": "bearer"
+            }
+          },
+          "required": [
+            "type",
+            "token"
+          ]
+        }
+      ]
+    },
+    "QueryParameterValue": {
+      "description": "A value for a particular query parameter key",
+      "anyOf": [
+        {
+          "description": "The common case: `?foo=bar`",
+          "$ref": "#/$defs/Template"
+        },
+        {
+          "description": "Multiple values for the same parameter. This will be represented by\nrepeating the parameter key: `?foo=bar&foo=baz`",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Template"
+          }
+        }
+      ]
+    }
+  }
+}

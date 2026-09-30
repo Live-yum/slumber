@@ -1,0 +1,56 @@
+Slumber 便携版：精简基础操作（crypto.3）
+
+一、升级与启动
+关闭旧程序，用新 slumber.exe / slumber 替换旧主程序。
+保留自己的 slumber.yml、config.yml 和 data；不要用示例覆盖。
+Windows：在程序目录的终端运行 .\slumber.exe --portable
+Linux：在程序目录的终端运行 ./slumber --portable
+必须使用新版程序；crypto.1 的 x 编辑仍依赖外部编辑器。
+
+二、配置接口
+按 x，选择 Edit Recipe / Edit Collection，进入内置编辑器。
+在 slumber.yml 的 profiles 下填写接口地址、账号、密码；
+在 crypto.am / crypto.demo_b 下填写 key.value、iv.value。
+密钥用引号包住，utf8 表示原文，不要自行转 Hex。
+示例只连接 127.0.0.1 模拟接口，实际使用前需改为自己的地址。
+
+三、发送和查看
+r：聚焦请求列表；上下键选择请求；Enter 发送。
+p：选择环境；1：请求面板；2：响应面板；Tab：切换焦点。
+配置了 response_transform 后，返回值自动解码/解密。
+响应面板 F6：切换原始 / 解密视图；左右键切换页签。
+上下键或 PageUp/PageDown 滚动；v：内置只读查看器。
+x：当前操作菜单，可选择复制、编辑或 Save Body。
+Ctrl+H：历史记录；F5：重载集合；?：帮助；q：退出主界面。
+
+四、内置编辑器（不需要 Vim）
+直接输入文字；方向键移动；Tab 插入两个空格。
+Ctrl+S 保存；F2 保存并关闭；返回主界面后继续操作。
+Esc 关闭；未保存时 Y 放弃、N 继续、S 保存并关闭。
+Ctrl+A 全选；Ctrl+Z 撤销；Ctrl+Y 重做；Ctrl+F 查找；F3 下一处。
+Ctrl+C/X/V 只用于编辑器内部复制/剪切/粘贴。
+从系统粘贴请用终端粘贴功能，例如 Ctrl+Shift+V（取决于终端）。
+查看器内 Esc 或 q 关闭。body 编辑只影响当前会话，不改集合文件。
+
+五、筛选与保存响应
+先按 2 聚焦响应 Body。按 /，输入 .data.list 或 .items，Enter 执行。
+这是内置 JaQ，不需要安装 jq；清空表达式再 Enter 可恢复。
+按 :，输入 save C:\导出目录\结果.json，Enter 保存当前查询结果。
+Linux 示例：save /home/user/response.json
+目录须已存在，路径可含空格；此方式不覆盖已有文件。
+需覆盖时用 x 菜单的 Save Body 并确认。
+
+六、常用命令（Windows）
+.\slumber.exe --portable collection --edit
+.\slumber.exe --portable config --edit
+.\slumber.exe --portable request am_persons --transformed
+.\slumber.exe --portable request am_persons --transformed --output result.json
+.\slumber.exe --portable db "SELECT 1;"
+Linux 将 .\slumber.exe 换成 ./slumber。CLI 不加 --transformed 时输出原始响应。
+
+注意
+--portable 强制使用内置编辑器和查看器，旧 editor: vim 也不会启动 Vim。
+请求、加解密、编辑、查看、筛选、导出、历史和 SQL 不需要额外安装工具。
+任意 command() / !shell / db --exec 不属于内置脚本运行时，便携模式会拒绝。
+操作系统和终端仍是必要环境。明文导出文件、配置密钥请自行妥善保管。
+AM 推送和服务 B 写入接口有业务副作用，请核对后手动发送。

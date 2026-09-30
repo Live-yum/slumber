@@ -1,0 +1,45 @@
+[tasks.ci]
+description = "Run local CI commands"
+run = [
+  "cargo test --workspace",
+  "cargo clippy --all-targets --all-features",
+  "cargo fmt -- --check",
+  "mise rustdoc",
+  "mise schema --check",
+]
+
+[tasks.cli]
+description = "Run a CLI command"
+quiet = true
+run = "cargo run --package slumber_cli --no-default-features"
+
+[tasks.docs]
+description = "Build and serve docs"
+run = "mdbook serve docs/"
+
+[tasks.favicon]
+description = "Generate favicon for the site from the logo image"
+run = "magick -background transparent $MISE_PROJECT_ROOT/static/slumber.png -define icon:auto-resize=64 $MISE_PROJECT_ROOT/docs/theme/favicon.png"
+sources = ["docs/theme/favicon.png"]
+
+[tasks.rustdoc]
+description = "Build Rust docs, checking for broken links"
+env.RUSTDOCFLAGS = "-D warnings"
+run = "cargo doc --no-deps --all-features --document-private-items --workspace"
+
+[tasks.tui-profile]
+description = "Run the TUI with samply for profiling"
+env.CARGO_PROFILE_RELEASE_DEBUG = true # Include debug symbols
+env.SLUMBER_DATA_DIRECTORY = "{{ env.PWD }}/data/" # Use local config/data dir
+run = [
+  "cargo build --no-default-features --features=tui --bin=slumber --release",
+  "samply record ./target/release/slumber",
+]
+tools."cargo:samply" = "0.13.1"
+
+[env]
+RUST_BACKTRACE = 1
+
+[tools]
+"github:rust-lang/mdbook" = "0.5.1" # mdbook tool doesn't support aarch64/linux
+watchexec = "2.3.3"

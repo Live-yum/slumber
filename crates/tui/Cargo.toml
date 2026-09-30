@@ -1,0 +1,66 @@
+[package]
+authors = {workspace = true}
+description = "Terminal user interface for Slumber. Not intended for external use."
+edition = {workspace = true}
+homepage = {workspace = true}
+keywords = {workspace = true}
+license = {workspace = true}
+name = "slumber_tui"
+repository = {workspace = true}
+rust-version = {workspace = true}
+version = {workspace = true}
+
+[[bin]]
+name = "slumber_tui"
+path = "src/bin.rs"
+
+[dependencies]
+anyhow = {workspace = true}
+async-trait = {workspace = true}
+bytes = {workspace = true}
+chrono = {workspace = true}
+crossterm = {version = "0.29.0", default-features = false, features = ["bracketed-paste", "events", "event-stream", "osc52", "windows"]}
+derive_more = {workspace = true, features = ["debug", "deref", "deref_mut", "display", "eq", "from"]}
+futures = {workspace = true}
+indexmap = {workspace = true}
+itertools = {workspace = true}
+mime = {workspace = true}
+ratatui = {version = "0.30.0-alpha.5", default-features = false, features = ["crossterm", "underline-color"]}
+reqwest = {workspace = true}
+serde = {workspace = true}
+serde_json = {workspace = true}
+serde_yaml = {workspace = true}
+shell-words = "1.1.0"
+slumber_config = {workspace = true, features = ["tui"]}
+slumber_core = {workspace = true}
+slumber_console = {workspace = true}
+slumber_template = {workspace = true}
+slumber_util = {workspace = true}
+strum = {workspace = true}
+terminput = {workspace = true}
+terminput-crossterm = "0.4.0"
+tokio = {workspace = true, features = ["macros", "signal", "tracing"]}
+tokio-util = {workspace = true}
+tracing = {workspace = true}
+tree-sitter-highlight = "0.26.0"
+tree-sitter-json = "0.24.8"
+unicode-width = "0.2.0"
+uuid = {workspace = true}
+winnow = {workspace = true}
+
+[dev-dependencies]
+env-lock = {workspace = true}
+pretty_assertions = {workspace = true}
+proptest = {workspace = true}
+rstest = {workspace = true}
+slumber_core = {workspace = true, features = ["test"]}
+wiremock = {workspace = true}
+
+[lints]
+workspace = true
+
+[package.metadata.release]
+tag = false
+
+[package.metadata.dist]
+dist = false

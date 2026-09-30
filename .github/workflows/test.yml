@@ -1,0 +1,137 @@
+name: Test
+
+on:
+  push:
+    branches:
+      - master
+  pull_request:
+
+concurrency:
+  group: upstream-tests-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+# This uses the toolchain defined in rust-toolchain
+jobs:
+  fmt:
+    name: "Rustfmt"
+    runs-on: ubuntu-latest
+    env:
+      TOOLCHAIN: nightly-2026-02-20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: ${{env.TOOLCHAIN}}
+          components: rustfmt
+          cache: true
+      - name: Rustfmt Check
+        run: cargo fmt -- --check
+
+  lint:
+    name: Check/Lint - ${{ matrix.platform.name }}
+    strategy:
+      fail-fast: false
+      matrix:
+        platform:
+          - name: Linux
+            os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+          - name: Windows
+            os: windows-2025
+            target: x86_64-pc-windows-msvc
+          - name: macOS
+            os: macOS-latest
+            target: aarch64-apple-darwin
+    runs-on: ${{ matrix.platform.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Cache Rust files
+        uses: swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.platform.target }}
+      - name: Install toolchain
+        run: rustup target add ${{ matrix.platform.target }}
+      - name: Run Clippy
+        run: cargo clippy --target ${{ matrix.platform.target }} --all-targets --all-features
+
+  doc:
+    name: Check Docs
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Cache Rust files
+        uses: swatinem/rust-cache@v2
+      - name: Doc
+        run: cargo doc --no-deps --all-features --document-private-items --workspace
+        env:
+          RUSTDOCFLAGS: -D warnings
+
+  schema:
+    name: Check JSON Schemas for Changes
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Cache Rust files
+        uses: swatinem/rust-cache@v2
+      - name: Generate schemas from locked workspace
+        run: cargo run --locked -p slumber_core --features schema --example native_crypto_schema -- --check
+
+  test:
+    name: Test - ${{ matrix.platform.name }}
+    strategy:
+      fail-fast: false
+      matrix:
+        platform:
+          - name: Linux
+            os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+          - name: Windows
+            os: windows-2025
+            target: x86_64-pc-windows-msvc
+          - name: macOS
+            os: macOS-latest
+            target: aarch64-apple-darwin
+    runs-on: ${{ matrix.platform.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Cache Rust files
+        uses: swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.platform.target }}
+      - name: Install toolchain
+        run: rustup target add ${{ matrix.platform.target }}
+      - name: Run tests
+        run: cargo test --workspace --no-fail-fast
+        env:
+          RUST_BACKTRACE: 1
+
+  test_python:
+    name: Test Python - ${{ matrix.platform.name }}
+    strategy:
+      fail-fast: false
+      matrix:
+        platform:
+          - name: Linux
+            os: ubuntu-latest
+          - name: Windows
+            os: windows-2025
+          - name: macOS
+            os: macOS-latest
+    runs-on: ${{ matrix.platform.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Mise Install
+        uses: jdx/mise-action@v3
+        with:
+          working_directory: crates/python
+          install_args: python
+      - name: Cache Rust files
+        uses: swatinem/rust-cache@v2
+        with:
+          key: python-${{ matrix.platform.name }}
+      - name: Install dependencies
+        working-directory: crates/python
+        run: mise setup
+      - name: Run tests
+        working-directory: crates/python
+        run: mise test-python

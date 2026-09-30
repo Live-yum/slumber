@@ -1,0 +1,46 @@
+[package]
+authors = {workspace = true}
+description = "Common utilities used across several subcrates of Slumber. Not for external use."
+edition = {workspace = true}
+homepage = {workspace = true}
+keywords = {workspace = true}
+license = {workspace = true}
+name = "slumber_util"
+repository = {workspace = true}
+rust-version = {workspace = true}
+version = {workspace = true}
+
+[package.metadata.release]
+tag = false
+
+[dependencies]
+console-subscriber = {version = "0.5.0", default-features = false, optional = true}
+derive_more = {workspace = true, features = ["deref", "display", "from"]}
+dirs = {workspace = true}
+indexmap = {workspace = true}
+itertools = {workspace = true}
+path-clean = "1.0.1"
+rstest = {workspace = true, optional = true}
+saphyr = {workspace = true}
+serde = {workspace = true}
+serde_yaml = {workspace = true}
+thiserror = {workspace = true}
+tracing = {workspace = true}
+tracing-subscriber = {version = "0.3.17", default-features = false, features = ["ansi", "fmt", "registry"]}
+uuid = {workspace = true, features = ["v4"]}
+winnow = {workspace = true}
+
+[dev-dependencies]
+env-lock = {workspace = true}
+pretty_assertions = {workspace = true}
+rstest = {workspace = true}
+serde = {workspace = true, features = ["derive"]}
+uuid = {workspace = true, features = ["v4"]}
+
+[features]
+test = ["dep:rstest"]
+# Enable tokio-console tracing
+tokio_tracing = ["dep:console-subscriber"]
+
+[lints]
+workspace = true

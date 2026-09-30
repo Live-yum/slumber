@@ -1,0 +1,307 @@
+use ratatui::{
+    style::{Modifier, Style},
+    widgets::BorderType,
+};
+use slumber_config::Theme;
+
+/// Concrete styles for the TUI, generated from the theme. We *could* make this
+/// entire thing user-configurable, but that would be way too complex. The theme
+/// provides users some basic settings, then we figure out the minutae from
+/// there. Styles are grouped into sub-structs generally by component.
+#[derive(Clone, Debug)]
+pub struct Styles {
+    /// Default style for the background of every component
+    pub background: Style,
+    pub form: FormStyles,
+    pub list: ListStyles,
+    pub menu: MenuStyles,
+    pub modal: ModalStyles,
+    pub pane: PaneStyles,
+    pub status_code: StatusCodeStyles,
+    pub syntax: SyntaxStyles,
+    pub tab: TabStyles,
+    pub table: TableStyles,
+    pub template_preview: TemplatePreviewStyles,
+    pub text: TextStyle,
+    pub text_box: TextBoxStyle,
+    pub text_window: TextWindowStyle,
+}
+
+/// Styles for the recipe input form
+#[derive(Clone, Debug)]
+pub struct FormStyles {
+    /// Style for a input field title when not selected/focused
+    pub title: Style,
+    /// Style for a input field title when selected/focused
+    pub title_highlight: Style,
+    /// Style for an input field value when not selected/focused
+    pub content: Style,
+}
+
+/// Styles for List component
+#[derive(Clone, Debug)]
+pub struct ListStyles {
+    /// Highlighted item in a list
+    pub highlight: Style,
+    /// Highlight item in an inactive list (list isn't in focus)
+    pub highlight_inactive: Style,
+    /// Disabled item in a list
+    pub disabled: Style,
+    /// Regular item in a list
+    pub item: Style,
+}
+
+/// Styles for the action menu
+#[derive(Clone, Debug)]
+pub struct MenuStyles {
+    /// Border style when the menu is selected
+    pub border: Style,
+    /// Border style when the menu is inactive
+    pub border_inactive: Style,
+    /// Border variant
+    pub border_type: BorderType,
+}
+
+/// Styles for the Modal component
+#[derive(Clone, Debug)]
+pub struct ModalStyles {
+    pub border: Style,
+    pub border_type: BorderType,
+    pub default: Style,
+}
+
+/// Styles for Pane component
+#[derive(Clone, Debug)]
+pub struct PaneStyles {
+    /// Pane border when not selected/focused
+    pub border: Style,
+    /// Pane border when selected/focused
+    pub border_selected: Style,
+    /// Pane border characters used when not selected/focused
+    pub border_type: BorderType,
+    /// Pane border characters used when selected/focused
+    pub border_type_selected: BorderType,
+    /// Pane generic style
+    pub default: Style,
+    /// Title text when the pane is selected
+    pub title_selected: Style,
+}
+
+impl PaneStyles {
+    /// Get the type and style of the border for a pane
+    pub fn border(&self, has_focus: bool) -> (BorderType, Style) {
+        if has_focus {
+            (self.border_type_selected, self.border_selected)
+        } else {
+            (self.border_type, self.border)
+        }
+    }
+}
+
+/// Styles for HTTP status code display
+#[derive(Clone, Debug)]
+pub struct StatusCodeStyles {
+    pub success: Style,
+    pub error: Style,
+}
+
+/// Styles for syntax highlighting
+#[derive(Clone, Debug)]
+pub struct SyntaxStyles {
+    pub builtin: Style,
+    pub comment: Style,
+    pub escape: Style,
+    pub number: Style,
+    pub special: Style,
+    pub string: Style,
+}
+
+/// Styles for Tab component
+#[derive(Clone, Debug)]
+pub struct TabStyles {
+    /// Disabled tab text
+    pub disabled: Style,
+    /// Highlighted (selected) tab text
+    pub highlight: Style,
+}
+
+/// Styles for Table component
+#[derive(Clone, Debug)]
+pub struct TableStyles {
+    /// Table column header text
+    pub header: Style,
+    pub text: Style,
+    pub alt: Style,
+    pub disabled: Style,
+    pub highlight: Style,
+    pub title: Style,
+}
+
+/// Styles for TemplatePreview component
+#[derive(Clone, Debug)]
+pub struct TemplatePreviewStyles {
+    /// Text in a template preview that was replaced with dynamic content
+    pub dynamic: Style,
+    /// Text in a template preview that was supposed to be dynamic, but the
+    /// expression failed to render
+    pub error: Style,
+}
+
+/// General text styles
+#[derive(Clone, Debug)]
+pub struct TextStyle {
+    /// Text that needs some visual emphasis/separation
+    pub highlight: Style,
+    /// Informational text that should be de-emphasized
+    pub hint: Style,
+    /// Text in the primary color
+    pub primary: Style,
+    /// Templates that have been overridden in this session
+    pub edited: Style,
+    /// Text that means BAD BUSINESS
+    pub error: Style,
+    /// Text at the top of something
+    pub title: Style,
+}
+
+/// Styles for TextBox component
+#[derive(Clone, Debug)]
+pub struct TextBoxStyle {
+    pub text: Style,
+    pub placeholder: Style,
+    pub invalid: Style,
+}
+
+/// Styles for TextWindow component
+#[derive(Clone, Debug)]
+pub struct TextWindowStyle {
+    /// Line numbers on large text areas
+    pub gutter: Style,
+}
+
+impl Styles {
+    pub fn new(theme: &Theme) -> Self {
+        Self {
+            background: Style::default().bg(theme.background_color.into()),
+            form: FormStyles {
+                title: Style::default()
+                    .fg(theme.text_color.into())
+                    .add_modifier(Modifier::UNDERLINED),
+                title_highlight: Style::default()
+                    .fg(theme.primary_color.into())
+                    .add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
+                content: Style::default().fg(theme.text_color.into()),
+            },
+            list: ListStyles {
+                highlight: Style::default()
+                    .bg(theme.primary_color.into())
+                    .fg(theme.primary_text_color.into())
+                    .add_modifier(Modifier::BOLD),
+                highlight_inactive: Style::default()
+                    .fg(theme.primary_color.into())
+                    .add_modifier(Modifier::BOLD),
+                disabled: Style::default().fg(theme.disabled_color.into()),
+                item: Style::default().fg(theme.text_color.into()),
+            },
+            menu: MenuStyles {
+                border: Style::default().fg(theme.primary_color.into()),
+                border_inactive: Style::default().fg(theme.border_color.into()),
+                border_type: BorderType::Rounded,
+            },
+            modal: ModalStyles {
+                border: Style::default().fg(theme.primary_color.into()),
+                border_type: BorderType::Double,
+                default: Style::default().fg(theme.text_color.into()),
+            },
+            pane: PaneStyles {
+                border: Style::default()
+                    .fg(theme.border_color.into())
+                    .remove_modifier(Modifier::BOLD),
+                border_selected: Style::default()
+                    .fg(theme.primary_color.into())
+                    .add_modifier(Modifier::BOLD),
+                border_type: BorderType::Rounded,
+                border_type_selected: BorderType::Double,
+                default: Style::default().fg(theme.text_color.into()),
+                title_selected: Style::default()
+                    .add_modifier(Modifier::UNDERLINED),
+            },
+            status_code: StatusCodeStyles {
+                success: Style::default()
+                    .bg(theme.success_color.into())
+                    .fg(theme.primary_text_color.into()),
+                error: Style::default()
+                    .bg(theme.error_color.into())
+                    .fg(theme.primary_text_color.into()),
+            },
+            syntax: SyntaxStyles {
+                // We only style by foreground for syntax
+                builtin: Style::default().fg(theme.syntax.builtin_color.into()),
+                comment: Style::default().fg(theme.syntax.comment_color.into()),
+                escape: Style::default().fg(theme.syntax.escape_color.into()),
+                number: Style::default().fg(theme.syntax.number_color.into()),
+                special: Style::default().fg(theme.syntax.special_color.into()),
+                string: Style::default().fg(theme.syntax.string_color.into()),
+            },
+            tab: TabStyles {
+                disabled: Style::default().fg(theme.disabled_color.into()),
+                highlight: Style::default()
+                    .fg(theme.primary_color.into())
+                    .add_modifier(Modifier::BOLD)
+                    .add_modifier(Modifier::UNDERLINED),
+            },
+            table: TableStyles {
+                header: Style::default()
+                    .fg(theme.text_color.into())
+                    .add_modifier(Modifier::BOLD)
+                    .add_modifier(Modifier::UNDERLINED),
+                text: Style::default().fg(theme.text_color.into()),
+                alt: Style::default()
+                    .bg(theme.alternate_row_background_color.into())
+                    .fg(theme.alternate_row_text_color.into()),
+                disabled: Style::default().fg(theme.disabled_color.into()),
+                highlight: Style::default()
+                    .bg(theme.primary_color.into())
+                    .fg(theme.primary_text_color.into())
+                    .add_modifier(Modifier::BOLD),
+                title: Style::default()
+                    .fg(theme.text_color.into())
+                    .add_modifier(Modifier::BOLD),
+            },
+            template_preview: TemplatePreviewStyles {
+                dynamic: Style::default()
+                    .fg(theme.secondary_color.into())
+                    .add_modifier(Modifier::UNDERLINED),
+                error: Style::default()
+                    .bg(theme.error_color.into())
+                    .fg(theme.primary_text_color.into()),
+            },
+            text: TextStyle {
+                highlight: Style::default()
+                    .bg(theme.primary_color.into())
+                    .fg(theme.primary_text_color.into()),
+                hint: Style::default().fg(theme.hint_text_color.into()),
+                primary: Style::default().fg(theme.primary_color.into()),
+                edited: Style::default().add_modifier(Modifier::ITALIC),
+                error: Style::default().fg(theme.error_color.into()),
+                title: Style::default()
+                    .fg(theme.text_color.into())
+                    .add_modifier(Modifier::BOLD),
+            },
+            text_box: TextBoxStyle {
+                text: Style::default()
+                    .bg(theme.text_box_background_color.into())
+                    .fg(theme.text_color.into())
+                    // Strip inherited modifiers
+                    .remove_modifier(Modifier::all()),
+                placeholder: Style::default().fg(theme.text_color.into()),
+                invalid: Style::default()
+                    .bg(theme.error_color.into())
+                    .fg(theme.primary_text_color.into()),
+            },
+            text_window: TextWindowStyle {
+                gutter: Style::default().fg(theme.hint_text_color.into()),
+            },
+        }
+    }
+}

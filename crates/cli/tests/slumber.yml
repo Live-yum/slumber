@@ -1,0 +1,106 @@
+# Collection for CLI integration tests
+
+name: CLI Tests
+
+profiles:
+  profile1:
+    name: Profile 1
+    default: true
+    data:
+      host: "{{ env('HOST', default='http://server') }}"
+      username: username1
+      a: 0
+      b: 0
+  profile2:
+    name: Profile 2
+    data:
+      host: "{{ env('HOST', default='http://server') }}"
+      username: username2
+
+requests:
+  getUser:
+    method: GET
+    url: "{{ host }}/users/{{ username }}"
+
+  query:
+    method: GET
+    url: "{{ host }}/query"
+    query:
+      a: 1
+      b: [2, 3]
+
+  headers:
+    method: GET
+    url: "{{ host }}/headers"
+    headers:
+      Content-Type: text/plain
+
+  authBasic:
+    method: GET
+    url: "{{ host }}/headers"
+    authentication:
+      type: basic
+      username: "{{ username }}"
+      password: hunter2
+
+  authBearer:
+    method: GET
+    url: "{{ host }}/headers"
+    authentication:
+      type: bearer
+      token: my-token
+
+  textBody:
+    method: POST
+    url: "{{ host }}/text"
+    body: "This is an HTTP body"
+
+  jsonBody:
+    method: POST
+    url: "{{ host }}/json"
+    body:
+      type: json
+      data: { "username": "{{ username }}", "name": "Frederick Smidgen" }
+
+  fileBody:
+    method: POST
+    url: "{{ host }}/file"
+    body: "{{ file('test_data/data.json') }}"
+
+  urlencoded:
+    method: POST
+    url: "{{ host }}/urlencoded"
+    body:
+      type: form_urlencoded
+      data:
+        username: "{{ username }}"
+
+  multipart:
+    method: POST
+    url: "{{ host }}/multipart"
+    body:
+      type: form_multipart
+      data:
+        username: "{{ username }}"
+        file: "{{ file('test_data/data.json') }}"
+
+  chained:
+    method: GET
+    url: "{{ host }}/chained/{{ response('getUser', trigger='always') | jsonpath('$.username') }}"
+
+  override:
+    method: POST
+    url: "{{ host }}/override"
+    query:
+      foo: bar
+      many: [baz, blorp]
+    headers:
+      X-Test: test
+    body:
+      type: json
+      data: { "a": "{{ a }}", "b": "{{ b }}" }
+
+  do_not_persist:
+    method: GET
+    url: "{{host}}/secret"
+    persist: false

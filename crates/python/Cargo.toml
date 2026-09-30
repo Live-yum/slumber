@@ -1,0 +1,34 @@
+[package]
+authors = {workspace = true}
+description = "Python bindings for Slumber, the source-based REST/HTTP client"
+edition = {workspace = true}
+homepage = {workspace = true}
+keywords = {workspace = true}
+license = {workspace = true}
+name = "slumber_python"
+publish = false
+repository = {workspace = true}
+rust-version = {workspace = true}
+# See README about version management
+version = {workspace = true}
+
+[package.metadata.release]
+release = false
+tag = false
+
+[lib]
+name = "slumber"
+crate-type = ["cdylib"]
+
+[dependencies]
+async-trait = {workspace = true}
+indexmap = {workspace = true}
+pyo3 = {version = "0.27.2", features = ["experimental-async", "indexmap"]}
+slumber_config = {workspace = true}
+slumber_console = {workspace = true}
+slumber_core = {workspace = true}
+slumber_template = {workspace = true}
+tokio = {workspace = true, features = ["rt-multi-thread"]}
+
+[lints]
+workspace = true

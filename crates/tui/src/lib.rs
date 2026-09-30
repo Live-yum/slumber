@@ -1,0 +1,930 @@
+//! Terminal user interface for Slumber.
+//!
+//! **This crate is not semver compliant**. The version is locked to the root
+//! `slumber` crate version. If you choose to depend directly on this crate, you
+//! do so at your own risk of breakage.
+
+mod builtin;
+mod collection_state;
+mod http;
+mod input;
+mod message;
+mod util;
+mod view;
+
+use crate::{
+    builtin::BuiltinFile,
+    collection_state::CollectionState,
+    http::{RequestConfig, RequestState, TuiHttpProvider},
+    input::{InputBindings, InputEvent},
+    message::{
+        HttpMessage, Message, MessageReceiver, MessageSender, RecipeCopyTarget,
+    },
+    util::ResultReported,
+    view::{Event, PreviewPrompter, RequestDisposition, TuiPrompter},
+};
+use anyhow::{Context, anyhow, bail};
+use bytes::Bytes;
+use crossterm::{clipboard::CopyToClipboard, event::EventStream, execute};
+use futures::{Stream, StreamExt, pin_mut};
+use ratatui::{
+    Terminal,
+    prelude::{Backend, CrosstermBackend},
+};
+use slumber_config::{Action, Config};
+use slumber_console::editor::{EditorAction, FileEditor};
+use slumber_core::{
+    collection::{Collection, CollectionFile, ProfileId, RecipeId},
+    database::{CollectionDatabase, Database},
+    http::{HttpEngine, RequestId, RequestSeed, RequestTicket},
+    render::{Prompter, TemplateContext},
+};
+use slumber_util::yaml::SourceLocation;
+use std::{
+    io::{self, Stdout},
+    ops::Deref,
+    path::PathBuf,
+    sync::Arc,
+};
+use tokio::{select, task};
+use tokio_util::sync::CancellationToken;
+use tracing::{error, info, trace};
+
+/// Main controller struct for the TUI. The app uses a React-ish architecture
+/// for the view, with a wrapping controller (this struct)
+///
+/// `B` is the terminal backend type; see [Backend]
+#[derive(Debug)]
+pub struct Tui<B: TerminalBackend> {
+    /// Token to manage cancellation of the main loop and all background tasks
+    ///
+    /// If run() is called multiple times (e.g. in a test), a new token will be
+    /// generated for each call because they are single-use.
+    cancel_token: CancellationToken,
+    /// App-wide configuration. This never gets reloaded; it'll be the same for
+    /// the entire session. The Arc allows cheap sharing throughout the app.
+    config: Arc<Config>,
+    /// Persistence database, for storing request state, UI state, etc.
+    ///
+    /// This is the root database, *not* scoped to a specific collection. We'll
+    /// mostly used the scoped version from [CollectionState].
+    database: Database,
+    /// Make request go brrr
+    http_engine: HttpEngine,
+    /// Receiver for the async message queue, which allows background tasks and
+    /// the view to pass data and trigger side effects. Nobody else gets to
+    /// touch this
+    messages_rx: MessageReceiver,
+    /// Transmitter for the async message queue, which can be freely cloned and
+    /// passed around
+    messages_tx: MessageSender,
+    /// All state related to the current collection file
+    ///
+    /// This gets replaced wholesale when switching collection files
+    state: CollectionState,
+    /// Output terminal. Parameterized for testing.
+    terminal: Terminal<B>,
+    builtin_file: Option<BuiltinFile>,
+}
+
+impl Tui<CrosstermBackend<Stdout>> {
+    /// Start the TUI on a real terminal. Any errors that occur during startup
+    /// will be panics, because they prevent TUI execution.
+    pub async fn start(collection_path: Option<PathBuf>) -> anyhow::Result<()> {
+        let app =
+            Self::new(CrosstermBackend::new(io::stdout()), collection_path)?;
+        // Stream input from the terminal
+        let input_stream = EventStream::new().map(|event_result| {
+            let event = event_result.expect("Error reading terminal input");
+            // Convert from crossterm to the common terminput format. This
+            // enables support for multiple terminal backends
+            terminput_crossterm::to_terminput(event).unwrap()
+        });
+
+        // The code to revert the terminal takeover is in `Tui::drop`, so we
+        // shouldn't take over the terminal until right before creating the
+        // `Tui`.
+        initialize_panic_handler();
+        util::initialize_terminal()?;
+
+        // ===== CRITICAL SECTION =====
+        // Do not exit from here (other than panic) to ensure the terminal gets
+        // restored below
+        //
+        // Run everything in one local set, so that we can use !Send values
+        let local = task::LocalSet::new();
+        local.spawn_local(app.run(input_stream));
+        local.await;
+        // ===== END CRITICAL SECTION =====
+
+        // Restore terminal
+        if let Err(err) = util::restore_terminal() {
+            error!(error = err.deref(), "Error restoring terminal, sorry!");
+        }
+
+        Ok(())
+    }
+}
+
+impl<B> Tui<B>
+where
+    B: 'static + TerminalBackend,
+    B::Error: 'static + Send + Sync,
+{
+    /// Create a new TUI
+    ///
+    /// This will *not* start the TUI process. It initializes all needed state,
+    /// config, etc. but will not write to the terminal or read input yet. Call
+    /// [Self::run] to run the main loop.
+    pub fn new(
+        backend: B,
+        collection_path: Option<PathBuf>,
+    ) -> anyhow::Result<Self> {
+        // Create a message queue for handling async tasks
+        let (messages_tx, messages_rx) = message::queue();
+
+        // Load config file. Failure shouldn't be fatal since we can fall back
+        // to default, just show an error to the user
+        let config: Arc<Config> = Config::load()
+            .reported(&messages_tx)
+            .unwrap_or_default()
+            .into();
+        let http_engine = HttpEngine::new(&config.http);
+        let database = Database::load()?;
+
+        // Initialize TUI state, which will try to load the collection. If it
+        // fails to load, we'll dump the user into an error state that watches
+        // the file
+        let collection_file = CollectionFile::new(collection_path)?;
+        let state = CollectionState::load(
+            config.clone(),
+            collection_file,
+            database.clone(),
+            messages_tx.clone(),
+        );
+
+        let terminal = Terminal::new(backend)?;
+
+        Ok(Self {
+            cancel_token: CancellationToken::new(),
+            config,
+            database,
+            http_engine,
+            messages_rx,
+            messages_tx,
+            state,
+            terminal,
+            builtin_file: None,
+        })
+    }
+
+    /// Get a reference to the terminal backend
+    pub fn backend(&self) -> &B {
+        self.terminal.backend()
+    }
+
+    /// Get a reference to the collection
+    ///
+    /// Return `None` iff the collection failed to load and we're in an error
+    /// state
+    pub fn collection(&self) -> Option<&Collection> {
+        self.state.collection.as_deref().ok()
+    }
+
+    /// Get a reference to the database handle
+    pub fn database(&self) -> &CollectionDatabase {
+        &self.state.database
+    }
+
+    /// Run the main TUI update loop
+    ///
+    /// Any error returned from this is fatal. If the loop exits gracefully,
+    /// return `self`. This is useful in integration tests.
+    pub async fn run(
+        mut self,
+        input_stream: impl Stream<Item = terminput::Event>,
+    ) -> anyhow::Result<Self> {
+        // Spawn background tasks
+        self.listen_for_signals();
+        self.watch_collection();
+
+        let input_bindings =
+            InputBindings::new(self.config.tui.input_bindings.clone());
+        pin_mut!(input_stream);
+
+        self.draw()?; // Initial draw
+
+        loop {
+            // ===== Message Phase =====
+            // Wait for one of 2 things to happen:
+            // - Message appears in the queue
+            // - Input event from the terminal
+            //
+            // The goal is to only do work when there's something to do, to
+            // minimize the idle CPU usage
+
+            let message = select! {
+                // The ordering and usage of `biased` is very important here:
+                // if there's a message in the queue, we want to handle it
+                // immediately *before* the input stream is polled. If the
+                // message triggers a subprocess that yields the terminal, then
+                // polling the input stream can interfere with the spawned
+                // process. By checking the message queue first, we ensure the
+                // input stream only gets polled when there are no messages.
+                // See https://github.com/LucasPickering/slumber/issues/506 and
+                // associated PR
+                biased;
+                message = self.messages_rx.pop() => message,
+                event_option = input_stream.next() => {
+                    if let Some(event) = event_option {
+                        if let Some(file) = self.builtin_file.as_mut() {
+                            match file.editor.handle_event(event) {
+                                EditorAction::Close => {
+                                    let file = self.builtin_file.take().expect("open editor");
+                                    if let Some((temp, callback)) = file.on_close { callback(temp); }
+                                    if let Some(path) = file.collection { self.state.reload_edited_collection(&path); }
+                                }
+                                EditorAction::Saved | EditorAction::Continue => {}
+                            }
+                            self.draw()?;
+                            continue;
+                        }
+                        let Some(event) = input_bindings.convert_event(event) else { continue; };
+                        Message::Input(event)
+                    } else {
+                        // We ran out of input, just end the program
+                        break;
+                    }
+                },
+                () = self.cancel_token.cancelled() => break,
+            };
+
+            trace!(?message, "Handling message");
+            // If an error occurs, store it so we can show the user
+            self.handle_message(message).reported(&self.messages_tx);
+
+            // ===== Draw Phase =====
+            // Skip the draw if there are more messages in the queue. When
+            // there's a lot of messages (e.g. holding down a key or a lot of
+            // previews rendering at once), repeated draws slow down the app.
+            // By batching draws together, we can save time.
+            //
+            // There is a risk to this: draw changes the behavior of the app,
+            // because only drawn components receive key events. By batching
+            // these events, key events may go to the wrong place.
+            if self.messages_rx.is_empty() {
+                self.draw()?;
+            }
+        }
+
+        // The loop may be called again (in a test), so leave a fresh token for
+        // the next run
+        self.cancel_token = CancellationToken::new();
+
+        Ok(self)
+    }
+
+    fn draw(&mut self) -> anyhow::Result<()> {
+        if let Some(file) = self.builtin_file.as_mut() {
+            self.terminal.draw(|frame| file.editor.draw(frame))?;
+            Ok(())
+        } else {
+            self.state.draw(&mut self.terminal)?;
+            Ok(())
+        }
+    }
+
+    /// Handle an incoming message. Any error here will be displayed as a modal
+    fn handle_message(&mut self, message: Message) -> anyhow::Result<()> {
+        match message {
+            Message::ClearTerminal => self.terminal.clear()?,
+
+            Message::CollectionEndReload(result) => {
+                // Because we're just swapping out the collection value and
+                // using the same file, we can just update state instead of
+                // replacing it
+                self.state.set_collection(result);
+            }
+            Message::CollectionSelect(path) => {
+                // Collection file has changed, so we have to rebuild state
+                let collection_file = CollectionFile::new(Some(path))?;
+                self.state = CollectionState::load(
+                    self.config.clone(),
+                    collection_file,
+                    self.database.clone(),
+                    self.messages_tx.clone(),
+                );
+            }
+            Message::CollectionStartReload => self.state.reload_collection(),
+            Message::CollectionFileChanged => {
+                self.state.reload_collection_if_changed();
+            }
+            Message::CollectionEdit { location } => {
+                self.edit_collection(location)?;
+            }
+
+            Message::CopyRecipe(target) => self.copy_recipe(target)?,
+            Message::CopyText(text) => self.copy_text(text)?,
+
+            Message::Error { error } => self.state.view.error(error),
+            Message::Event(event) => self.state.handle_event(event),
+
+            Message::FileEdit { file, on_complete } => {
+                if self.config.builtin_editor() {
+                    self.builtin_file = Some(BuiltinFile {
+                        editor: FileEditor::open(file.path(), false)?,
+                        on_close: Some((file, on_complete)),
+                        _view_file: None,
+                        collection: None,
+                    });
+                } else {
+                    let editor = self.config.editor()?;
+                    util::yield_terminal(
+                        editor.open(file.path()),
+                        &self.messages_tx,
+                    )?;
+                    on_complete(file);
+                }
+            }
+            Message::FileView { file, mime } => {
+                if self.config.builtin_pager(mime.as_ref()) {
+                    self.builtin_file = Some(BuiltinFile {
+                        editor: FileEditor::open(file.path(), true)?,
+                        on_close: None,
+                        _view_file: Some(file),
+                        collection: None,
+                    });
+                } else {
+                    let pager = self.config.pager(mime.as_ref())?;
+                    util::yield_terminal(
+                        pager.open(file.path()),
+                        &self.messages_tx,
+                    )?;
+                    drop(file);
+                }
+            }
+
+            Message::Http(message) => self.handle_http(message)?,
+            Message::HttpGetLatest {
+                profile_id,
+                recipe_id,
+                channel,
+            } => {
+                let exchange = self
+                    .state
+                    .request_store
+                    .load_latest_exchange(profile_id.as_ref(), &recipe_id)
+                    .reported(&self.messages_tx)
+                    .flatten()
+                    .cloned();
+                channel.reply(exchange);
+            }
+
+            // Force quit short-circuits the view/message cycle, to make sure
+            // it doesn't get ate by text boxes
+            Message::Input(InputEvent::Key {
+                action: Some(Action::ForceQuit),
+                ..
+            })
+            | Message::Quit => self.quit(),
+            Message::Input(InputEvent::Resize { .. }) => {
+                // Redraw the entire screen. There are certain scenarios where
+                // the terminal gets cleared but ratatui's (e.g. waking from
+                // sleep) buffer doesn't, so the two get out of sync
+                self.terminal.clear()?;
+                self.draw()?;
+            }
+            Message::Input(event) => {
+                self.state.handle_event(Event::Input(event));
+            }
+
+            Message::Notify(message) => self.state.view.notify(message),
+            Message::Question(question) => self.state.view.question(question),
+            Message::SaveResponseBody { request_id, data } => {
+                self.save_response_body(request_id, data).with_context(
+                    || {
+                        format!(
+                            "Error saving response body \
+                            for request {request_id}"
+                        )
+                    },
+                )?;
+            }
+            Message::Spawn(future) => {
+                self.spawn(future);
+            }
+            Message::TemplatePreview { callback } => {
+                // Note: there's a potential bug here, if the selected profile
+                // changed since this message was queued. In practice is
+                // extremely unlikely (potentially impossible), and this
+                // shortcut saves us a lot of plumbing so it's worth it
+                let profile_id = self.state.view.selected_profile_id().cloned();
+                let context = self.template_context(profile_id, None);
+                self.spawn(callback(context));
+            }
+            Message::TransformResponse {
+                profile_id,
+                callback,
+            } => {
+                if self.state.collection.is_ok() {
+                    let use_overrides = self.state.view.selected_profile_id()
+                        == profile_id.as_ref();
+                    let mut context = self.template_context(profile_id, None);
+                    context.show_sensitive = true;
+                    if !use_overrides {
+                        context.overrides.clear();
+                    }
+                    self.spawn(callback(context));
+                }
+            }
+            Message::Tick => {} // This just triggers a draw, no update needed
+        }
+        Ok(())
+    }
+
+    /// Handle an [HttpMessage]
+    fn handle_http(&mut self, message: HttpMessage) -> anyhow::Result<()> {
+        let disposition = match message {
+            HttpMessage::Triggered {
+                request_id,
+                profile_id,
+                recipe_id,
+            } => {
+                self.state
+                    .request_store
+                    .start(request_id, profile_id, recipe_id, None);
+                // Request is triggered in the background. Switching to it could
+                // be jarring
+                RequestDisposition::Change(request_id)
+            }
+            HttpMessage::Begin => {
+                let id = self.send_request()?;
+                // New requests should be shown immediately
+                RequestDisposition::Select(id)
+            }
+            HttpMessage::Resend(request_id) => {
+                let id = self.resend_request(request_id)?;
+                RequestDisposition::Select(id)
+            }
+            HttpMessage::Prompt {
+                recipe_id,
+                request_id,
+                prompt,
+            } => RequestDisposition::OpenPrompt {
+                recipe_id,
+                request_id,
+                prompt,
+            },
+            HttpMessage::BuildError(error) => {
+                let id = self.state.request_store.build_error(error).id();
+                RequestDisposition::Change(id)
+            }
+            HttpMessage::Loading(request) => {
+                let id = self.state.request_store.loading(request).id();
+                RequestDisposition::Change(id)
+            }
+            HttpMessage::Complete(result) => {
+                let state = match result {
+                    Ok(exchange) => self.state.request_store.response(exchange),
+                    Err(error) => self.state.request_store.request_error(error),
+                };
+                RequestDisposition::Change(state.id())
+            }
+            HttpMessage::Cancel(request_id) => {
+                let id = self.state.request_store.cancel(request_id).id();
+                RequestDisposition::Change(id)
+            }
+            HttpMessage::DeleteRequest(request_id) => {
+                self.state.request_store.delete_request(request_id)?;
+                RequestDisposition::Change(request_id)
+            }
+            HttpMessage::DeleteRecipe {
+                recipe_id,
+                profile_filter,
+            } => {
+                let deleted = self
+                    .state
+                    .request_store
+                    .delete_recipe_requests(profile_filter, &recipe_id)?;
+                RequestDisposition::ChangeAll(deleted)
+            }
+        };
+
+        // Tell the UI that *something* changed in the request store, and
+        // optionally the disposition will tell it if anything should change.
+        // The view is responsible for checking the store to see if the current
+        // request was changed at all, and modify the view if so.
+        self.state
+            .view
+            .refresh_request(&mut self.state.request_store, disposition);
+
+        Ok(())
+    }
+
+    /// Spawn a task to listen in the background for quit signals
+    fn listen_for_signals(&self) {
+        let messages_tx = self.messages_tx.clone();
+        self.spawn(async move {
+            util::signals().await.reported(&messages_tx);
+            messages_tx.send(Message::Quit);
+        });
+    }
+
+    /// Spawn a task to watch the collection file for changes
+    fn watch_collection(&self) {
+        let path = self.state.collection_file.path().to_owned();
+        let messages_tx = self.messages_tx.clone();
+
+        self.spawn(util::watch_file(path, move || {
+            messages_tx.send(Message::CollectionFileChanged);
+        }));
+    }
+
+    /// Open the collection file in the user's editor
+    fn edit_collection(
+        &mut self,
+        location: Option<SourceLocation>,
+    ) -> anyhow::Result<()> {
+        if self.config.builtin_editor() {
+            let path = location
+                .as_ref()
+                .map_or(self.state.collection_file.path(), |location| {
+                    std::path::Path::new(&location.source)
+                });
+            let path = path.canonicalize()?;
+            let mut editor = FileEditor::open(&path, false)?;
+            if let Some(location) = location {
+                editor.goto(location.line as usize, location.column as usize);
+            }
+            self.builtin_file = Some(BuiltinFile {
+                editor,
+                on_close: None,
+                _view_file: None,
+                collection: Some(path),
+            });
+            return Ok(());
+        }
+        let editor = self.config.editor()?;
+        let command = if let Some(location) = location {
+            editor.open_at(location.source, location.line, location.column)
+        } else {
+            editor.open(self.state.collection_file.path())
+        };
+        util::yield_terminal(command, &self.messages_tx)
+    }
+
+    /// Spawn a task on the main thread
+    ///
+    /// Because the task is run on the main thread, it can be `!Send`. This
+    /// allows view tasks to access the event queue. The task will be
+    /// automatically cancelled when the TUI exits.
+    fn spawn(&self, future: impl 'static + Future<Output = ()>) {
+        task::spawn_local(util::cancellable(&self.cancel_token, future));
+    }
+
+    /// GOODBYE
+    fn quit(&mut self) {
+        info!("Initiating graceful shutdown");
+        // Kill the main loop and all background tasks
+        self.cancel_token.cancel();
+    }
+
+    /// Build and send a new request in a background task
+    fn send_request(&mut self) -> anyhow::Result<RequestId> {
+        let RequestConfig {
+            profile_id,
+            recipe_id,
+            options,
+        } = self.state.request_config()?;
+        // Launch the request in a separate task so it doesn't block.
+        // These clones are all cheap.
+
+        let seed = RequestSeed::new(recipe_id.clone(), options);
+        let request_id = seed.id;
+        let template_context =
+            self.template_context(profile_id.clone(), Some(&seed));
+        let http_engine = self.http_engine.clone();
+        let messages_tx = self.messages_tx.clone();
+        // Grab the target database *before* starting the build. If we change
+        // collections while the request is building OR loading, it will still
+        // be persisted to the correct DB.
+        let persist_to = self.persist_to(&recipe_id);
+
+        // Don't use spawn_result here, because errors are handled specially for
+        // requests
+        let cancel_token = CancellationToken::new();
+        let future = async move {
+            // Build the request
+            let result = http_engine.build(seed, &template_context).await;
+            let ticket = match result {
+                Ok(ticket) => ticket,
+                Err(error) => {
+                    // Report the error, but don't actually return anything
+                    messages_tx.send(HttpMessage::BuildError(error.into()));
+                    return;
+                }
+            };
+
+            Self::send_request_inner(ticket, persist_to, messages_tx).await;
+        };
+        self.spawn(util::cancellable(&cancel_token, future));
+
+        // Add the new request to the store. This has to go after spawning the
+        // task so we can include the cancel token
+        self.state.request_store.start(
+            request_id,
+            profile_id,
+            recipe_id,
+            Some(cancel_token),
+        );
+
+        Ok(request_id)
+    }
+
+    /// Build a new HTTP request as a clone of an old one, then send it in a
+    /// background task
+    ///
+    /// Because we're just copying an old request instead of rendering
+    /// templates, this is synchronous.
+    fn resend_request(
+        &mut self,
+        previous_request_id: RequestId,
+    ) -> anyhow::Result<RequestId> {
+        // Build the request. This is synchronous because there's no template
+        // rendering involved, it's just copying bytes from the old request
+        let previous_request = self
+            .state
+            .request_store
+            .get(previous_request_id)
+            .ok_or_else(|| {
+                anyhow!("Request {previous_request_id} does not exist")
+            })?
+            .request()
+            .ok_or_else(|| {
+                anyhow!("Request {previous_request_id} has not been built yet")
+            })?;
+        let ticket = self.http_engine.rebuild(previous_request)?;
+        let record = ticket.record();
+        let id = record.id;
+
+        let cancel_token = CancellationToken::new();
+        self.state.request_store.start(
+            id,
+            record.profile_id.clone(),
+            record.recipe_id.clone(),
+            Some(cancel_token.clone()),
+        );
+
+        // Launch the request in a task
+        let persist_to = self.persist_to(&ticket.record().recipe_id);
+        self.spawn(util::cancellable(
+            &cancel_token,
+            Self::send_request_inner(
+                ticket,
+                persist_to,
+                self.messages_tx.clone(),
+            ),
+        ));
+        Ok(id)
+    }
+
+    /// Inner helper to send a request and report its status to the loop
+    async fn send_request_inner(
+        ticket: RequestTicket,
+        persist_to: Option<CollectionDatabase>,
+        messages_tx: MessageSender,
+    ) {
+        // Report liftoff
+        messages_tx.send(HttpMessage::Loading(Arc::clone(ticket.record())));
+
+        // Send the request and report the result to the main loop
+        let result = ticket.send(persist_to).await.map_err(Arc::new);
+        messages_tx.send(HttpMessage::Complete(result));
+    }
+
+    /// Get the database that an upcoming request should be persisted to
+    ///
+    /// If the request should be persisted at all, this is the DB of the current
+    /// collection. This checks both the global config `persist` field as well
+    /// as the recipe's `persist` field. Return `None` if it should not be
+    /// persisted. We need to calculate this DB *before* the request is sent,
+    /// because it's possible to switch to a new collection while the request is
+    /// in flight.
+    fn persist_to(&self, recipe_id: &RecipeId) -> Option<CollectionDatabase> {
+        let collection = self.collection().expect("Collection missing");
+
+        // Persist in the DB if not disabled by global config or recipe
+        let persist = self.config.tui.persist
+            && collection
+                .recipes
+                .get_recipe(recipe_id)
+                .is_some_and(|recipe| recipe.persist);
+        if persist {
+            Some(self.database().clone())
+        } else {
+            None
+        }
+    }
+
+    /// Copy text to the user's clipboard and notify them
+    fn copy_text(&mut self, text: String) -> anyhow::Result<()> {
+        self.terminal.backend_mut().copy_to_clipboard(text)?;
+        self.state.view.notify("Copied text to clipboard");
+        Ok(())
+    }
+
+    /// Copy some component of the current recipe. Depending on the target, this
+    /// may require rendering some or all of the recipe
+    fn copy_recipe(&mut self, target: RecipeCopyTarget) -> anyhow::Result<()> {
+        match target {
+            // Render+copy URL
+            RecipeCopyTarget::Url => {
+                let http_engine = self.http_engine.clone();
+                self.render_copy(async move |context, seed| {
+                    let url = http_engine.build_url(seed, &context).await?;
+                    Ok(url.to_string())
+                })
+            }
+
+            // Render+copy body
+            RecipeCopyTarget::Body => {
+                let http_engine = self.http_engine.clone();
+                self.render_copy(async move |context, seed| {
+                    let body = http_engine
+                        .build_body(seed, &context)
+                        .await?
+                        .ok_or(anyhow!("Request has no body"))?;
+                    // Clone the bytes :(
+                    String::from_utf8(body.into())
+                        .context("Cannot copy request body")
+                })
+            }
+
+            // Copy the recipe as a CLI command. This does *not* require
+            // rendering; the render is done when the command is executed
+            RecipeCopyTarget::Cli => {
+                let command = self
+                    .state
+                    .request_config()?
+                    .to_cli(self.state.collection_file.path());
+                self.copy_text(command)
+            }
+
+            // Render request, then copy the equivalent curl command
+            RecipeCopyTarget::Curl => {
+                let http_engine = self.http_engine.clone();
+                self.render_copy(async move |context, seed| {
+                    http_engine
+                        .build_curl(seed, &context)
+                        .await
+                        .map_err(anyhow::Error::from)
+                })
+            }
+
+            RecipeCopyTarget::Python => {
+                let code = self
+                    .state
+                    .request_config()?
+                    .to_python(self.state.collection_file.path());
+                self.copy_text(code)
+            }
+        }
+    }
+
+    /// Call an async function to render some part of a request to a string,
+    /// then copy that string to the clipboard
+    fn render_copy<F>(&self, render: F) -> anyhow::Result<()>
+    where
+        F: 'static
+            + AsyncFnOnce(TemplateContext, RequestSeed) -> anyhow::Result<String>,
+    {
+        let messages_tx = self.messages_tx.clone();
+        let RequestConfig {
+            profile_id,
+            recipe_id,
+            options,
+        } = self.state.request_config()?;
+        let seed = RequestSeed::new(recipe_id, options);
+        // Even though this isn't a real request, we use a real request ID
+        // because we may need to show prompts to the user under that ID
+        let context = self.template_context(profile_id, Some(&seed));
+
+        let future = render(context, seed);
+        self.messages_tx.spawn_result(async move {
+            let text = future.await?;
+            messages_tx.send(Message::CopyText(text));
+            Ok(())
+        });
+
+        Ok(())
+    }
+
+    /// Save the body of a response to a file, prompting the user for a file
+    /// path. If the body text is provided, that will be used. Useful when
+    /// what's being saved differs from the actual response body (because of
+    /// prettification/querying). If not provided, we'll pull the body from the
+    /// request store.
+    fn save_response_body(
+        &self,
+        request_id: RequestId,
+        text: Option<String>,
+    ) -> anyhow::Result<()> {
+        let Some(request_state) = self.state.request_store.get(request_id)
+        else {
+            bail!("Request not in store")
+        };
+        let RequestState::Response { exchange } = request_state else {
+            bail!("Request is not complete")
+        };
+        // Get a suggested file name from the response if possible
+        let default_path = exchange.response.file_name();
+
+        let data = text.map(Bytes::from).unwrap_or_else(|| {
+            // This is the path we hit for binary and/or large bodies that were
+            // never parsed. This clone is cheap so we're being efficient!
+            exchange.response.body.bytes().clone()
+        });
+        self.messages_tx.spawn_result(util::save_file(
+            self.messages_tx.clone(),
+            default_path,
+            data,
+        ));
+        Ok(())
+    }
+
+    /// Expose app state to the templater. Most of the data has to be cloned out
+    /// to be passed across async boundaries. This is annoying but in reality
+    /// it should be small data.
+    fn template_context(
+        &self,
+        profile_id: Option<ProfileId>,
+        // Request being built is needed to group prompts that are generated.
+        // `None` for previews, which aren't tied to a request
+        seed: Option<&RequestSeed>,
+    ) -> TemplateContext {
+        // Shouldn't be reachable if the collection isn't loaded
+        let collection =
+            self.state.collection.as_ref().expect("Collection missing");
+
+        // If request_id is given, it's a request build. Otherwise it's a
+        // preview
+        let is_preview = seed.is_none();
+        let http_provider = TuiHttpProvider::new(
+            self.http_engine.clone(),
+            self.messages_tx.clone(),
+            self.config.tui.persist.then(|| self.database().clone()),
+            is_preview,
+        );
+        let prompter: Box<dyn Prompter> = if let Some(seed) = seed {
+            Box::new(TuiPrompter::new(
+                seed.recipe_id.clone(),
+                seed.id,
+                self.messages_tx.clone(),
+            ))
+        } else {
+            Box::new(PreviewPrompter)
+        };
+
+        TemplateContext {
+            selected_profile: profile_id,
+            collection: Arc::clone(collection),
+            http_provider: Box::new(http_provider),
+            prompter,
+            overrides: self.state.view.profile_overrides(),
+            show_sensitive: !is_preview,
+            root_dir: self.state.collection_file.parent().to_owned(),
+            state: Default::default(),
+        }
+    }
+}
+
+impl<B: TerminalBackend> Drop for Tui<B> {
+    fn drop(&mut self) {
+        // Kill any tasks that may still be running. Useful for panics
+        self.cancel_token.cancel();
+    }
+}
+
+/// Extension of [Backend] that defines additional backend-specific behavior
+pub trait TerminalBackend: Backend {
+    /// Copy some text to the system clipboard
+    fn copy_to_clipboard(&mut self, text: String) -> anyhow::Result<()>;
+}
+
+impl TerminalBackend for CrosstermBackend<Stdout> {
+    fn copy_to_clipboard(&mut self, text: String) -> anyhow::Result<()> {
+        // Use self.writer_mut() after stabilized
+        // https://docs.rs/ratatui-crossterm/0.1.0/ratatui_crossterm/struct.CrosstermBackend.html#method.writer_mut
+        execute!(io::stdout(), CopyToClipboard::to_clipboard_from(text))
+            .context("Error copying text")
+    }
+}
+
+/// Restore terminal state during a panic
+fn initialize_panic_handler() {
+    let original_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |panic_info| {
+        let _ = util::restore_terminal();
+        original_hook(panic_info);
+    }));
+}

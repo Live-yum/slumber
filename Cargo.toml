@@ -1,0 +1,177 @@
+[package]
+authors = {workspace = true}
+description = "Terminal-based HTTP client"
+edition = {workspace = true}
+homepage = {workspace = true}
+keywords = {workspace = true}
+license = {workspace = true}
+name = "slumber"
+repository = {workspace = true}
+rust-version = {workspace = true}
+version = {workspace = true}
+
+[workspace]
+members = ["crates/*"]
+exclude = ["vendor/crossterm"]
+
+[workspace.package]
+authors = ["Lucas Pickering <lucas@lucaspickering.me>"]
+edition = "2024"
+homepage = "https://slumber.lucaspickering.me"
+keywords = ["rest", "http", "terminal", "tui"]
+license = "MIT"
+repository = "https://github.com/LucasPickering/slumber"
+version = "5.3.0"
+# Keep in sync w/ rust-toolchain.toml
+rust-version = "1.90.0"
+
+# Dependencies used in multiple crates get de-duplicated here
+[workspace.dependencies]
+anyhow = "1.0.0"
+async-trait = "0.1.81"
+base64 = "0.22.1"
+bytes = {version = "1.6.1", default-features = false}
+chrono = {version = "0.4.31", default-features = false}
+clap = "4.4.2"
+derive_more = {version = "2.1.0", default-features = false}
+dialoguer = {version = "0.12.0", default-features = false}
+dirs = "6.0.0"
+env-lock = "1.0.1"
+futures = "0.3.28"
+indexmap = {version = "2.0.0", default-features = false}
+itertools = "0.14.0"
+mime = "0.3.17"
+pretty_assertions = "1.4.0"
+proptest = "1.5.0"
+proptest-derive = "0.7.0"
+quote = "1.0.40"
+regex = {version = "1.10.5", default-features = false}
+reqwest = {version = "0.13.1", default-features = false}
+rstest = {version = "0.26.0", default-features = false}
+saphyr = "0.0.6"
+schemars = "1.0.2"
+serde = {version = "1.0.204", default-features = false}
+serde_json = {version = "1.0.120", default-features = false, features = ["preserve_order", "arbitrary_precision"]}
+serde_json_path = "0.7.1"
+serde_test = "1.0.176"
+serde_yaml = {version = "0.9.0", default-features = false}
+slumber_cli = {path = "./crates/cli", version = "5.3.0" }
+slumber_config = {path = "./crates/config", version = "5.3.0", default-features = false}
+slumber_console = {path = "./crates/console", version = "5.3.0" }
+slumber_core = {path = "./crates/core", version = "5.3.0" }
+slumber_import = {path = "./crates/import", version = "5.3.0" }
+slumber_macros = {path = "./crates/macros", version = "5.3.0" }
+slumber_template = {path = "./crates/template", version = "5.3.0" }
+slumber_tui = {path = "./crates/tui", version = "5.3.0" }
+slumber_util = {path = "./crates/util", version = "5.3.0" }
+strum = {version = "0.27.0", default-features = false}
+syn = "2.0.101"
+terminput = "0.5.3"
+thiserror = "2.0.12"
+tokio = {version = "1.39.2", default-features = false}
+tokio-util = "0.7.13"
+tracing = "0.1.40"
+url = "2.0.0"
+uuid = {version = "1.10.0", default-features = false}
+winnow = "0.7.0"
+wiremock = {version = "0.6.1", default-features = false}
+
+[workspace.lints.rust]
+async_fn_in_trait = "allow"
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+all = {level = "deny", priority = -1}
+pedantic = {level = "warn", priority = -1}
+
+allow_attributes = "deny"
+cast_possible_truncation = "allow"
+cast_possible_wrap = "allow"
+cast_precision_loss = "allow"
+cast_sign_loss = "allow"
+dbg_macro = "warn"
+default_trait_access = "allow"
+doc_markdown = "allow"
+explicit_deref_methods = "allow"
+large_enum_variant = "allow"
+map_unwrap_or = "allow"
+match_same_arms = "allow"
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
+module_inception = "allow"
+must_use_candidate = "allow"
+needless_pass_by_value = "allow"
+similar_names = "allow"
+single_match = "allow"
+too_many_lines = "allow"
+unused_self = "allow"
+used_underscore_binding = "allow"
+
+[dependencies]
+anyhow = {workspace = true, features = ["backtrace"]}
+slumber_cli = {workspace = true}
+slumber_tui = {workspace = true}
+slumber_util = {workspace = true}
+tokio = {workspace = true, features = ["macros", "rt", "tracing"]}
+tracing = {workspace = true}
+
+[features]
+default = ["import"]
+# Import can be disabled in dev to speed up compilation. It has a big dep tree
+import = ["slumber_cli/import"]
+
+[lints]
+workspace = true
+
+# https://proptest-rs.github.io/proptest/proptest/tips-and-best-practices.html#performance
+[profile.test.package.proptest]
+opt-level = 3
+
+[profile.test.package.rand_chacha]
+opt-level = 3
+
+# The profile that 'cargo dist' will build with
+[profile.dist]
+inherits = "release"
+lto = "thin"
+
+[package.metadata.release]
+pre-release-hook = ["mise", "run", "gifs", "--check"]
+pre-release-replacements = [
+  {file = "CHANGELOG.md", search = "## \\[Unreleased\\] - ReleaseDate", replace = "## [Unreleased] - ReleaseDate\n\n<!-- ANCHOR: changelog -->\n\n## [{{version}}] - {{date}}"},
+]
+
+# Config for 'dist'
+[workspace.metadata.dist]
+# The preferred dist version to use in CI (Cargo.toml SemVer syntax)
+cargo-dist-version = "0.30.2"
+# CI backends to support
+ci = "github"
+# The installers to generate for each app
+installers = ["shell", "powershell", "homebrew"]
+# A GitHub repo to push Homebrew formulas to
+tap = "LucasPickering/homebrew-tap"
+# Target platforms to build apps for (Rust target-triple syntax)
+targets = [
+  "aarch64-apple-darwin",
+  "aarch64-unknown-linux-gnu",
+  "aarch64-unknown-linux-musl",
+  "aarch64-pc-windows-msvc",
+  "x86_64-apple-darwin",
+  "x86_64-unknown-linux-gnu",
+  "x86_64-unknown-linux-musl",
+  "x86_64-pc-windows-msvc",
+]
+# Publish jobs to run in CI
+publish-jobs = ["homebrew"]
+# Which actions to run on pull requests
+pr-run-mode = "plan"
+# Whether to install an updater program
+install-updater = false
+# Path that installers should place binaries in
+install-path = "CARGO_HOME"
+# Build only the required packages, and individually
+precise-builds = true
+
+[patch.crates-io]
+crossterm = {path = "vendor/crossterm"}

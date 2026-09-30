@@ -1,0 +1,7 @@
+# 原生便携配置，不依赖测试环境变量或外部解密程序。
+follow_redirects: false
+persist: false
+
+# In-process editor/viewer on all platforms.
+editor: builtin
+pager: builtin

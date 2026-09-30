@@ -1,0 +1,607 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Config",
+  "description": "App-level configuration, which is global across all sessions and\ncollections. This is *not* meant to modifiable during a session. If changes\nare made to the config file while a TUI session is running, they won't be\npicked up until the app restarts.",
+  "type": "object",
+  "properties": {
+    "editor": {
+      "description": "In-app editor: builtin by default on all platforms. Explicit external\ncommands are used only outside portable mode; EDITOR/VISUAL do not opt\nin.",
+      "type": [
+        "string",
+        "null"
+      ],
+      "default": null
+    },
+    "ignore_certificate_hosts": {
+      "description": "TLS cert errors on these hostnames are ignored. Be careful!",
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "default": []
+    },
+    "large_body_size": {
+      "description": "Request/response bodies over this size are treated differently, for\nperformance reasons",
+      "type": "integer",
+      "format": "uint",
+      "minimum": 0,
+      "default": 1000000
+    },
+    "follow_redirects": {
+      "description": "Follow 3xx redirects automatically. Enabled by default",
+      "type": "boolean",
+      "default": true
+    },
+    "commands": {
+      "description": "Configuration for in-app query and export commands",
+      "$ref": "#/$defs/CommandsConfig",
+      "default": {
+        "shell": [
+          "/bin/sh",
+          "-c"
+        ],
+        "default_query": {}
+      }
+    },
+    "mime_overrides": {
+      "description": "Override mapping for MIME types\n\nThis mapping is applied before any other MIME-based operations. It\nallows you to dynamically replace a response's reported `Content-Type`.\nIt's useful when the server uses the wrong MIME.",
+      "$ref": "#/$defs/MimeOverrideMap",
+      "default": {}
+    },
+    "pager": {
+      "description": "Command to use to browse response bodies. If provided, overrides\n`PAGER` environment variable.  This could be a single command, or a\nmap of {content_type: command} to use different commands\nbased on response type. Aliased for backward compatibility\nwith the old name.",
+      "$ref": "#/$defs/MimeMap",
+      "default": {}
+    },
+    "preview_templates": {
+      "description": "Should templates be rendered inline in the UI, or should we show\nthe raw text?",
+      "type": "boolean",
+      "default": true
+    },
+    "input_bindings": {
+      "description": "Overrides for default key bindings",
+      "$ref": "#/$defs/InputMap",
+      "default": {
+        "quit": [
+          "q"
+        ],
+        "force_quit": [
+          "ctrl c"
+        ],
+        "scroll_up": [
+          "shift up",
+          "shift k"
+        ],
+        "scroll_down": [
+          "shift down",
+          "shift j"
+        ],
+        "scroll_left": [
+          "shift left",
+          "shift h"
+        ],
+        "scroll_right": [
+          "shift right",
+          "shift l"
+        ],
+        "open_actions": [
+          "x"
+        ],
+        "help": [
+          "?"
+        ],
+        "fullscreen": [
+          "f"
+        ],
+        "reload_collection": [
+          "f5"
+        ],
+        "history": [
+          "ctrl h"
+        ],
+        "search": [
+          "/"
+        ],
+        "export": [
+          ":"
+        ],
+        "previous_pane": [
+          "shift tab"
+        ],
+        "next_pane": [
+          "tab"
+        ],
+        "up": [
+          "up",
+          "k"
+        ],
+        "down": [
+          "down",
+          "j"
+        ],
+        "left": [
+          "left",
+          "h"
+        ],
+        "right": [
+          "right",
+          "l"
+        ],
+        "page_up": [
+          "pageup"
+        ],
+        "page_down": [
+          "pagedown"
+        ],
+        "home": [
+          "home"
+        ],
+        "end": [
+          "end"
+        ],
+        "submit": [
+          "enter"
+        ],
+        "toggle": [
+          "space"
+        ],
+        "cancel": [
+          "escape"
+        ],
+        "delete": [
+          "delete"
+        ],
+        "edit": [
+          "e"
+        ],
+        "reset": [
+          "z"
+        ],
+        "view": [
+          "v"
+        ],
+        "command_history": [
+          "ctrl r"
+        ],
+        "select_collection": [
+          "f3"
+        ],
+        "toggle_sidebar": [
+          "s"
+        ],
+        "toggle_response_view": [
+          "f6"
+        ],
+        "profile_list": [
+          "p"
+        ],
+        "recipe_list": [
+          "r"
+        ],
+        "top_pane": [
+          "1"
+        ],
+        "bottom_pane": [
+          "2"
+        ],
+        "resize_back": [
+          "["
+        ],
+        "resize_forward": [
+          "]"
+        ]
+      }
+    },
+    "theme": {
+      "description": "Visual configuration for the TUI (e.g. colors)",
+      "$ref": "#/$defs/Theme",
+      "default": {
+        "primary_color": "Blue",
+        "primary_text_color": "White",
+        "secondary_color": "Yellow",
+        "success_color": "Green",
+        "error_color": "Red",
+        "text_color": "Reset",
+        "background_color": "Reset",
+        "border_color": "White",
+        "disabled_color": "DarkGray",
+        "hint_text_color": "DarkGray",
+        "text_box_background_color": "DarkGray",
+        "alternate_row_background_color": "DarkGray",
+        "alternate_row_text_color": "Reset",
+        "syntax": {
+          "comment_color": "Gray",
+          "builtin_color": "Blue",
+          "escape_color": "Green",
+          "number_color": "Cyan",
+          "string_color": "LightGreen",
+          "special_color": "Green"
+        }
+      }
+    },
+    "persist": {
+      "description": "Enable/disable persistence for all TUI requests? The CLI ignores\nthis in favor of the absence/presence of the `--persist`\nflag",
+      "type": "boolean",
+      "default": true
+    }
+  },
+  "examples": [
+    {
+      "editor": null,
+      "ignore_certificate_hosts": [],
+      "large_body_size": 1000000,
+      "follow_redirects": true,
+      "commands": {
+        "shell": [
+          "/bin/sh",
+          "-c"
+        ],
+        "default_query": {}
+      },
+      "mime_overrides": {},
+      "pager": {},
+      "preview_templates": true,
+      "input_bindings": {
+        "quit": [
+          "q"
+        ],
+        "force_quit": [
+          "ctrl c"
+        ],
+        "scroll_up": [
+          "shift up",
+          "shift k"
+        ],
+        "scroll_down": [
+          "shift down",
+          "shift j"
+        ],
+        "scroll_left": [
+          "shift left",
+          "shift h"
+        ],
+        "scroll_right": [
+          "shift right",
+          "shift l"
+        ],
+        "open_actions": [
+          "x"
+        ],
+        "help": [
+          "?"
+        ],
+        "fullscreen": [
+          "f"
+        ],
+        "reload_collection": [
+          "f5"
+        ],
+        "history": [
+          "ctrl h"
+        ],
+        "search": [
+          "/"
+        ],
+        "export": [
+          ":"
+        ],
+        "previous_pane": [
+          "shift tab"
+        ],
+        "next_pane": [
+          "tab"
+        ],
+        "up": [
+          "up",
+          "k"
+        ],
+        "down": [
+          "down",
+          "j"
+        ],
+        "left": [
+          "left",
+          "h"
+        ],
+        "right": [
+          "right",
+          "l"
+        ],
+        "page_up": [
+          "pageup"
+        ],
+        "page_down": [
+          "pagedown"
+        ],
+        "home": [
+          "home"
+        ],
+        "end": [
+          "end"
+        ],
+        "submit": [
+          "enter"
+        ],
+        "toggle": [
+          "space"
+        ],
+        "cancel": [
+          "escape"
+        ],
+        "delete": [
+          "delete"
+        ],
+        "edit": [
+          "e"
+        ],
+        "reset": [
+          "z"
+        ],
+        "view": [
+          "v"
+        ],
+        "command_history": [
+          "ctrl r"
+        ],
+        "select_collection": [
+          "f3"
+        ],
+        "toggle_sidebar": [
+          "s"
+        ],
+        "toggle_response_view": [
+          "f6"
+        ],
+        "profile_list": [
+          "p"
+        ],
+        "recipe_list": [
+          "r"
+        ],
+        "top_pane": [
+          "1"
+        ],
+        "bottom_pane": [
+          "2"
+        ],
+        "resize_back": [
+          "["
+        ],
+        "resize_forward": [
+          "]"
+        ]
+      },
+      "theme": {
+        "primary_color": "Blue",
+        "primary_text_color": "White",
+        "secondary_color": "Yellow",
+        "success_color": "Green",
+        "error_color": "Red",
+        "text_color": "Reset",
+        "background_color": "Reset",
+        "border_color": "White",
+        "disabled_color": "DarkGray",
+        "hint_text_color": "DarkGray",
+        "text_box_background_color": "DarkGray",
+        "alternate_row_background_color": "DarkGray",
+        "alternate_row_text_color": "Reset",
+        "syntax": {
+          "comment_color": "Gray",
+          "builtin_color": "Blue",
+          "escape_color": "Green",
+          "number_color": "Cyan",
+          "string_color": "LightGreen",
+          "special_color": "Green"
+        }
+      },
+      "persist": true
+    }
+  ],
+  "patternProperties": {
+    "^\\.": {
+      "description": "Ignore any property beginning with `.`"
+    }
+  },
+  "$defs": {
+    "CommandsConfig": {
+      "description": "Configuration for in-app query and export commands",
+      "type": "object",
+      "properties": {
+        "shell": {
+          "description": "Wrapping shell to parse and execute commands\nIf empty, commands will be parsed with shell-words and run natievly",
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [
+            "/bin/sh",
+            "-c"
+          ]
+        },
+        "default_query": {
+          "description": "Default query command for responses",
+          "$ref": "#/$defs/MimeMap",
+          "default": {}
+        }
+      }
+    },
+    "MimeMap": {
+      "description": "A map of content type patterns to values. Use this when you need to select a\nvalue based on the `Content-Type` header of a request/response. The patterns\nuse [glob] for matching, so technically it's trying to match a Unix\npath-like string, but that happens to look the same as a MIME type.",
+      "type": "object",
+      "additionalProperties": {
+        "type": "string"
+      }
+    },
+    "MimeOverrideMap": {
+      "description": "A map of MIME types overridden by the user\n\nThis is used to map unknown MIME types to known ones. For example:\n\n`\"text/javascript\": json` will treat all `text/javascript` bodies as JSON\nbodies for the purposes of syntax highlighting, pager selection, etc.\n\nThe keys can be any MIME pattern (including wildcards), but the values\n**must be valid MIME types**.",
+      "$ref": "#/$defs/MimeMap",
+      "examples": [
+        {
+          "text/javascript": "application/json"
+        }
+      ]
+    },
+    "InputMap": {
+      "description": "Mapping of actions to input bindings\n\nIntuitively this should be binding:action since we get key events from the\nuser and need to look up the corresponding actions. But we can't look up a\nbinding from the map based on an input event because event<=>binding\nmatching is more nuanced that simple equality (e.g. bonus modifiers keys can\nbe ignored). We have to iterate over map when checking inputs, but keying by\naction at least allows us to look up action=>binding for help text.",
+      "type": "object",
+      "additionalProperties": {
+        "$ref": "#/$defs/InputBinding"
+      }
+    },
+    "InputBinding": {
+      "description": "One or more key combinations, which should correspond to a single action",
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/KeyCombination"
+      }
+    },
+    "KeyCombination": {
+      "description": "Key input sequence, which can trigger an action",
+      "type": "string"
+    },
+    "Theme": {
+      "description": "User-configurable visual settings. These are used to generate the full style\nset.",
+      "type": "object",
+      "properties": {
+        "primary_color": {
+          "description": "Color for primary content such as the selected pane",
+          "$ref": "#/$defs/Color",
+          "default": "Blue"
+        },
+        "primary_text_color": {
+          "description": "Color for text on top of the primary color. This should contrast with\nthe primary color well",
+          "$ref": "#/$defs/Color",
+          "default": "White"
+        },
+        "secondary_color": {
+          "description": "Color for secondary accented content",
+          "$ref": "#/$defs/Color",
+          "default": "Yellow"
+        },
+        "success_color": {
+          "description": "Color representing success (e.g. for 2xx status codes)",
+          "$ref": "#/$defs/Color",
+          "default": "Green"
+        },
+        "error_color": {
+          "description": "Color representing error (e.g. for 4xx status codes)",
+          "$ref": "#/$defs/Color",
+          "default": "Red"
+        },
+        "text_color": {
+          "description": "Color for regular text",
+          "$ref": "#/$defs/Color",
+          "default": "Reset"
+        },
+        "background_color": {
+          "description": "Color for the background of the application",
+          "$ref": "#/$defs/Color",
+          "default": "Reset"
+        },
+        "border_color": {
+          "description": "Color for pane and popup borders",
+          "$ref": "#/$defs/Color",
+          "default": "White"
+        },
+        "disabled_color": {
+          "description": "Color for text and components that are unavailable",
+          "$ref": "#/$defs/Color",
+          "default": "DarkGray"
+        },
+        "hint_text_color": {
+          "description": "Color for deemphasized text like hints and notes",
+          "$ref": "#/$defs/Color",
+          "default": "DarkGray"
+        },
+        "text_box_background_color": {
+          "description": "Color for the background of text boxes",
+          "$ref": "#/$defs/Color",
+          "default": "DarkGray"
+        },
+        "alternate_row_background_color": {
+          "description": "Background color of alternating table rows",
+          "$ref": "#/$defs/Color",
+          "default": "DarkGray"
+        },
+        "alternate_row_text_color": {
+          "description": "Text color of alternating table rows",
+          "$ref": "#/$defs/Color",
+          "default": "Reset"
+        },
+        "syntax": {
+          "description": "Syntax highlighting colors",
+          "$ref": "#/$defs/Syntax",
+          "default": {
+            "comment_color": "Gray",
+            "builtin_color": "Blue",
+            "escape_color": "Green",
+            "number_color": "Cyan",
+            "string_color": "LightGreen",
+            "special_color": "Green"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "Color": {
+      "description": "ANSI color code\n\nThis type accepts input beyond the enumerated values, but for simplicity\nthis type only declares the named colors. The other available options\nare very rarely used and make the schema harder to read.\n\nFor a full list of allowed types, see\n[the ratatui docs](https://docs.rs/ratatui/0.29.0/ratatui/style/enum.Color.html#impl-FromStr-for-Color).",
+      "type": "string",
+      "enum": [
+        "black",
+        "red",
+        "green",
+        "yellow",
+        "blue",
+        "magenta",
+        "cyan",
+        "gray",
+        "darkgray",
+        "lightred",
+        "lightgreen",
+        "lightyellow",
+        "lightblue",
+        "lightmagenta",
+        "lightcyan",
+        "white",
+        "reset"
+      ]
+    },
+    "Syntax": {
+      "description": "User-configurable visual settings for syntax highlighting.",
+      "type": "object",
+      "properties": {
+        "comment_color": {
+          "description": "Color for comments",
+          "$ref": "#/$defs/Color",
+          "default": "Gray"
+        },
+        "builtin_color": {
+          "description": "Color for builtins",
+          "$ref": "#/$defs/Color",
+          "default": "Blue"
+        },
+        "escape_color": {
+          "description": "Color for escape characters",
+          "$ref": "#/$defs/Color",
+          "default": "Green"
+        },
+        "number_color": {
+          "description": "Color for numbers",
+          "$ref": "#/$defs/Color",
+          "default": "Cyan"
+        },
+        "string_color": {
+          "description": "Color for strings",
+          "$ref": "#/$defs/Color",
+          "default": "LightGreen"
+        },
+        "special_color": {
+          "description": "Color for special characters",
+          "$ref": "#/$defs/Color",
+          "default": "Green"
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}

@@ -1,0 +1,53 @@
+name: Web
+
+# We're going to push to the gh-pages branch, so we need that permission
+permissions:
+  contents: write
+
+on:
+  pull_request:
+
+  # Deploy website when release is published
+  push:
+    tags:
+      - "**[0-9]+.[0-9]+.[0-9]+*"
+
+  # Run manually
+  workflow_dispatch:
+
+jobs:
+  web:
+    name: Build and deploy site and docs
+    runs-on: ubuntu-latest
+    steps:
+      # Setup
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          lfs: true
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: swatinem/rust-cache@v2
+
+      - name: Install tools
+        uses: jdx/mise-action@v3
+
+      - name: Build site
+        run: mdbook build docs/
+
+      - name: Check HTML for broken internal links
+        uses: untitaker/hyperlink@0.2.0
+        with:
+          args: ./docs/book --sources docs/src/ --check-anchors
+
+      - name: Deploy to Github Pages
+        uses: JamesIves/github-pages-deploy-action@v4.6.8
+        # Deploy only on master or push event (tag releases). For tag pushes,
+        # the ref isn't set to master even though the tag is always on the
+        # master branch
+        if: ${{ github.ref == 'refs/heads/master' || github.event_name == 'push' }}
+        with:
+          branch: gh-pages
+          # Gotta tell the action where to find mdbook's output
+          folder: docs/book
+          token: ${{ secrets.GITHUB_TOKEN }}
+          single-commit: true

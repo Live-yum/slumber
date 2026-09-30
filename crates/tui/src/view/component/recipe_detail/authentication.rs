@@ -1,0 +1,476 @@
+use crate::view::{
+    common::{
+        component_select::{
+            ComponentSelect, ComponentSelectProps, SelectStyles,
+        },
+        select::Select,
+    },
+    component::{
+        Canvas, Component, ComponentId, Draw, DrawMetadata, ToChild,
+        editable_template::EditableTemplate, internal::Child,
+    },
+    context::ViewContext,
+    persistent::SessionKey,
+};
+use ratatui::{layout::Layout, prelude::Constraint, text::Span};
+use slumber_core::collection::{Authentication, RecipeId};
+use slumber_template::Template;
+
+/// Display authentication settings for a recipe
+#[derive(Debug)]
+pub struct AuthenticationDisplay {
+    id: ComponentId,
+    state: State,
+}
+
+impl AuthenticationDisplay {
+    pub fn new(recipe_id: RecipeId, authentication: Authentication) -> Self {
+        let state = match authentication {
+            Authentication::Basic { username, password } => {
+                State::Basic(BasicAuthentication::new(
+                    recipe_id,
+                    username,
+                    password.unwrap_or_default(),
+                ))
+            }
+            Authentication::Bearer { token } => State::Bearer {
+                token: EditableTemplate::new(
+                    "Token",
+                    AuthenticationKey::Token(recipe_id.clone()),
+                    token,
+                ),
+            },
+        };
+        Self {
+            id: ComponentId::default(),
+            state,
+        }
+    }
+
+    /// If the user has applied a temporary edit to the auth settings, get the
+    /// override value. Return `None` to use the recipe's stock auth.
+    pub fn override_value(&self) -> Option<Authentication> {
+        match &self.state {
+            State::Basic(basic) => {
+                // If either field is overridden, we have to override both
+                if basic
+                    .select
+                    .items()
+                    .any(|item| item.value.override_template().is_some())
+                {
+                    Some(Authentication::Basic {
+                        username: basic.username().clone(),
+                        // We don't use an option on password internally because
+                        // an empty password is
+                        // equivalent to no password
+                        password: Some(basic.password().clone()),
+                    })
+                } else {
+                    None
+                }
+            }
+            State::Bearer { token, .. } => {
+                token.override_template().map(|template| {
+                    Authentication::Bearer {
+                        token: template.clone(),
+                    }
+                })
+            }
+        }
+    }
+}
+
+impl Component for AuthenticationDisplay {
+    fn id(&self) -> ComponentId {
+        self.id
+    }
+
+    fn children(&mut self) -> Vec<Child<'_>> {
+        match &mut self.state {
+            State::Basic(basic) => vec![basic.to_child()],
+            State::Bearer { token } => vec![token.to_child()],
+        }
+    }
+}
+
+impl Draw for AuthenticationDisplay {
+    fn draw(&self, canvas: &mut Canvas, (): (), metadata: DrawMetadata) {
+        let styles = ViewContext::styles();
+        let [label_area, content_area] =
+            Layout::vertical([Constraint::Length(1), Constraint::Min(0)])
+                .areas(metadata.area());
+
+        let label = match &self.state {
+            State::Basic { .. } => "Basic",
+            State::Bearer { .. } => "Bearer",
+        };
+        canvas.render_widget(
+            Span::styled(
+                format!("Authentication Type: {label}"),
+                styles.text.title,
+            ),
+            label_area,
+        );
+
+        match &self.state {
+            State::Basic(basic) => {
+                canvas.draw(basic, (), content_area, true);
+            }
+            State::Bearer { token } => {
+                canvas.draw(token, (), content_area, true);
+            }
+        }
+    }
+}
+
+/// Private to hide enum variants
+#[derive(Debug)]
+enum State {
+    Basic(BasicAuthentication),
+    Bearer {
+        token: EditableTemplate<AuthenticationKey>,
+    },
+}
+
+/// Wrapper for basic authentication state. This needs to be a separate
+/// component because it has its own event handling for the contained Select
+#[derive(Debug)]
+struct BasicAuthentication {
+    id: ComponentId,
+    /// A list of exactly two fields: [username, password]. This can't use
+    /// `FixedSelect` because there's associated data attached to each
+    /// field
+    select: ComponentSelect<BasicField>,
+}
+
+impl BasicAuthentication {
+    fn new(
+        recipe_id: RecipeId,
+        username: Template,
+        password: Template,
+    ) -> Self {
+        let username = EditableTemplate::new(
+            "Username",
+            AuthenticationKey::Username(recipe_id.clone()),
+            username,
+        );
+        let password = EditableTemplate::new(
+            "Password",
+            AuthenticationKey::Password(recipe_id.clone()),
+            password,
+        );
+        let select = Select::builder(vec![
+            BasicField::new("Username", username),
+            BasicField::new("Password", password),
+        ])
+        .build();
+        Self {
+            id: ComponentId::default(),
+            select: ComponentSelect::new(select),
+        }
+    }
+
+    fn username(&self) -> &Template {
+        self.select[0].value.template()
+    }
+
+    fn password(&self) -> &Template {
+        self.select[1].value.template()
+    }
+}
+
+impl Component for BasicAuthentication {
+    fn id(&self) -> ComponentId {
+        self.id
+    }
+
+    fn children(&mut self) -> Vec<Child<'_>> {
+        vec![self.select.to_child()]
+    }
+}
+
+impl Draw for BasicAuthentication {
+    fn draw(&self, canvas: &mut Canvas, (): (), metadata: DrawMetadata) {
+        canvas.draw(
+            &self.select,
+            ComponentSelectProps {
+                styles: SelectStyles::table(),
+                ..Default::default()
+            },
+            metadata.area(),
+            true,
+        );
+    }
+}
+
+/// One row in a basic auth form. Each form has exactly two rows: Username and
+/// Password
+#[derive(Debug)]
+struct BasicField {
+    id: ComponentId,
+    label: &'static str,
+    value: EditableTemplate<AuthenticationKey>,
+}
+
+impl BasicField {
+    fn new(
+        label: &'static str,
+        template: EditableTemplate<AuthenticationKey>,
+    ) -> Self {
+        Self {
+            id: ComponentId::default(),
+            label,
+            value: template,
+        }
+    }
+}
+
+impl Component for BasicField {
+    fn id(&self) -> ComponentId {
+        self.id
+    }
+
+    fn children(&mut self) -> Vec<Child<'_>> {
+        vec![self.value.to_child()]
+    }
+}
+
+impl Draw for BasicField {
+    fn draw(&self, canvas: &mut Canvas, (): (), metadata: DrawMetadata) {
+        let [label_area, value_area] =
+            Layout::horizontal([Constraint::Length(10), Constraint::Min(1)])
+                .areas(metadata.area());
+
+        canvas.render_widget(self.label, label_area);
+        canvas.draw(&self.value, (), value_area, true);
+    }
+}
+
+/// Session persistent key for override templates
+#[derive(Clone, Debug, PartialEq)]
+enum AuthenticationKey {
+    Token(RecipeId),
+    Username(RecipeId),
+    Password(RecipeId),
+}
+
+impl SessionKey for AuthenticationKey {
+    type Value = String;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::view::test_util::{TestComponent, TestHarness, harness};
+    use rstest::rstest;
+    use slumber_util::Factory;
+    use terminput::KeyCode;
+
+    /// Test edit basic username+password token via keybinds
+    #[rstest]
+    fn test_edit_basic(mut harness: TestHarness) {
+        let authentication = Authentication::Basic {
+            username: "user1".into(),
+            password: Some("hunter2".into()),
+        };
+        let mut component = TestComponent::new(
+            &mut harness,
+            AuthenticationDisplay::new(RecipeId::factory(()), authentication),
+        );
+
+        // Check initial state
+        assert_eq!(component.override_value(), None);
+
+        // Edit username
+        component
+            .int(&mut harness)
+            .send_key(KeyCode::Char('e'))
+            .send_text("!!!")
+            .send_key(KeyCode::Enter)
+            .assert()
+            .empty();
+        assert_eq!(
+            component.override_value(),
+            Some(Authentication::Basic {
+                username: "user1!!!".into(),
+                password: Some("hunter2".into())
+            })
+        );
+
+        // Reset username
+        component
+            .int(&mut harness)
+            .send_key(KeyCode::Char('z'))
+            .assert()
+            .empty();
+        assert_eq!(component.override_value(), None);
+
+        // Edit password
+        component
+            .int(&mut harness)
+            .send_keys([KeyCode::Down, KeyCode::Char('e')])
+            .send_text("???")
+            .send_key(KeyCode::Enter)
+            .assert()
+            .empty();
+        assert_eq!(
+            component.override_value(),
+            Some(Authentication::Basic {
+                username: "user1".into(),
+                password: Some("hunter2???".into())
+            })
+        );
+
+        // Reset password
+        component
+            .int(&mut harness)
+            .send_key(KeyCode::Char('z'))
+            .assert()
+            .empty();
+        assert_eq!(component.override_value(), None);
+    }
+
+    /// Test edit basic username via keybinds
+    #[rstest]
+    fn test_edit_basic_empty_password(mut harness: TestHarness) {
+        let authentication = Authentication::Basic {
+            username: "user1".into(),
+            password: None,
+        };
+        let mut component = TestComponent::new(
+            &mut harness,
+            AuthenticationDisplay::new(RecipeId::factory(()), authentication),
+        );
+
+        // Edit password
+        component
+            .int(&mut harness)
+            .send_keys([KeyCode::Down, KeyCode::Char('e'), KeyCode::Enter])
+            .assert()
+            .empty();
+        // There's no override because the password wasn't actually modified
+        assert_eq!(component.override_value(), None);
+    }
+
+    /// Test edit bearer token via keybinds
+    #[rstest]
+    fn test_edit_bearer(mut harness: TestHarness) {
+        let authentication = Authentication::Bearer {
+            token: "i am a token".into(),
+        };
+        let mut component = TestComponent::new(
+            &mut harness,
+            AuthenticationDisplay::new(RecipeId::factory(()), authentication),
+        );
+
+        // Check initial state
+        assert_eq!(component.override_value(), None);
+
+        // Edit token
+        component
+            .int(&mut harness)
+            .send_key(KeyCode::Char('e'))
+            .send_text("!!!")
+            .send_key(KeyCode::Enter)
+            .assert()
+            .empty();
+        assert_eq!(
+            component.override_value(),
+            Some(Authentication::Bearer {
+                token: "i am a token!!!".into()
+            })
+        );
+
+        // Reset token
+        component
+            .int(&mut harness)
+            .send_key(KeyCode::Char('z'))
+            .assert()
+            .empty();
+        assert_eq!(component.override_value(), None);
+    }
+
+    /// Test edit/reset via menu action
+    #[rstest]
+    fn test_edit_action(mut harness: TestHarness) {
+        let authentication = Authentication::Bearer {
+            token: "i am a token".into(),
+        };
+        let mut component = TestComponent::new(
+            &mut harness,
+            AuthenticationDisplay::new(RecipeId::factory(()), authentication),
+        );
+
+        component
+            .int(&mut harness)
+            .action(&["Token", "Edit"])
+            .send_keys([KeyCode::Char('!'), KeyCode::Enter])
+            .assert()
+            .empty();
+        assert_eq!(
+            component.override_value(),
+            Some(Authentication::Bearer {
+                token: "i am a token!".into()
+            })
+        );
+
+        component
+            .int(&mut harness)
+            .action(&["Token", "Reset"])
+            .assert()
+            .empty();
+        assert_eq!(component.override_value(), None);
+    }
+
+    /// Basic auth fields should load persisted overrides
+    #[rstest]
+    fn test_persisted_load_basic(mut harness: TestHarness) {
+        let recipe_id = RecipeId::factory(());
+        harness.set_session(
+            AuthenticationKey::Username(recipe_id.clone()),
+            "user".into(),
+        );
+        harness.set_session(
+            AuthenticationKey::Password(recipe_id.clone()),
+            "hunter2".into(),
+        );
+        let authentication = Authentication::Basic {
+            username: "".into(),
+            password: None,
+        };
+        let component = TestComponent::new(
+            &mut harness,
+            AuthenticationDisplay::new(recipe_id, authentication),
+        );
+
+        assert_eq!(
+            component.override_value(),
+            Some(Authentication::Basic {
+                username: "user".into(),
+                password: Some("hunter2".into()),
+            })
+        );
+    }
+
+    /// Bearer auth fields should load persisted overrides
+    #[rstest]
+    fn test_persisted_load_bearer(mut harness: TestHarness) {
+        let recipe_id = RecipeId::factory(());
+        harness.set_session(
+            AuthenticationKey::Token(recipe_id.clone()),
+            "token".into(),
+        );
+        let authentication = Authentication::Bearer { token: "".into() };
+        let component = TestComponent::new(
+            &mut harness,
+            AuthenticationDisplay::new(recipe_id, authentication),
+        );
+
+        assert_eq!(
+            component.override_value(),
+            Some(Authentication::Bearer {
+                token: "token".into()
+            })
+        );
+    }
+}

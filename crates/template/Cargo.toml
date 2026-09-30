@@ -1,0 +1,48 @@
+[package]
+authors = {workspace = true}
+description = "Template engine for Slumber. Not intended for external use."
+edition = {workspace = true}
+homepage = {workspace = true}
+keywords = {workspace = true}
+license = {workspace = true}
+name = "slumber_template"
+repository = {workspace = true}
+rust-version = {workspace = true}
+version = {workspace = true}
+
+[dependencies]
+bytes = {workspace = true, features = ["serde"]}
+derive_more = {workspace = true, features = ["debug", "deref", "display", "from"]}
+futures = {workspace = true}
+indexmap = {workspace = true, features = ["serde"]}
+itertools = {workspace = true}
+regex = {workspace = true}
+saphyr = {workspace = true}
+schemars = {workspace = true, optional = true}
+serde = {workspace = true, features = ["derive"]}
+serde_json = {workspace = true}
+slumber_util = {workspace = true}
+thiserror = {workspace = true}
+tracing = {workspace = true}
+winnow = {workspace = true}
+
+[dev-dependencies]
+pretty_assertions = {workspace = true}
+proptest = {workspace = true}
+proptest-derive = {workspace = true}
+rstest = {workspace = true}
+serde_json = {workspace = true}
+serde_yaml = {workspace = true}
+slumber_util = {workspace = true, features = ["test"]}
+tokio = {workspace = true, features = ["fs", "macros", "rt"]}
+tokio-util = {workspace = true, features=["io"]}
+
+[features]
+schema = ["dep:schemars"]
+test = ["slumber_util/test"]
+
+[lints]
+workspace = true
+
+[package.metadata.release]
+tag = false

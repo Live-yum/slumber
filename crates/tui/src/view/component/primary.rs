@@ -1,0 +1,754 @@
+//! Components for the "primary" view, which is the paned request/response view
+
+mod view_state;
+
+use crate::{
+    http::{RequestConfig, RequestState, RequestStore},
+    message::{HttpMessage, Message},
+    util::ResultReported,
+    view::{
+        Component, RequestDisposition, ViewContext,
+        common::{actions::MenuItem, modal::ModalQueue},
+        component::{
+            Canvas, Child, ComponentExt, ComponentId, Draw, DrawMetadata,
+            ToChild,
+            exchange_pane::ExchangePane,
+            history::History,
+            misc::{SidebarEvent, SidebarProps},
+            primary::view_state::{
+                Header, PaneArea, Sidebar, ViewState, VisiblePane,
+            },
+            profile_detail::ProfileDetail,
+            profile_list::ProfileList,
+            prompt_form::PromptForm,
+            recipe_detail::RecipeDetail,
+            recipe_list::RecipeList,
+        },
+        context::UpdateContext,
+        event::{BroadcastEvent, Emitter, Event, EventMatch, ToEmitter},
+        persistent::{PersistentKey, PersistentStore},
+    },
+};
+use indexmap::IndexMap;
+use ratatui::{
+    layout::{Layout, Offset, Rect, Spacing},
+    prelude::Constraint,
+};
+use serde::Serialize;
+use slumber_config::Action;
+use slumber_core::{
+    collection::{
+        ProfileId, RecipeId, RecipeNode, RecipeNodeType, ValueTemplate,
+    },
+    http::RequestId,
+};
+use slumber_util::yaml::SourceLocation;
+use std::iter;
+
+/// Primary TUI view, which shows request/response panes
+#[derive(Debug)]
+pub struct PrimaryView {
+    id: ComponentId,
+    // Own state
+    /// Current layout and selection state of the view
+    view: ViewState,
+
+    // Children
+    /// Header/sidebar to select a recipe
+    recipe_list: RecipeList,
+    /// Recipe preview/detail pane
+    recipe_detail: RecipeDetail,
+    /// Header/sidebar to select a profile
+    profile_list: ProfileList,
+    /// Profile preview/detail pane
+    profile_detail: ProfileDetail,
+    /// The exchange pane shows a particular request/response. The entire
+    /// component is rebuilt whenever the selected request changes. Internally
+    /// it handles non-recipe selections (empty recipe list, folder selected,
+    /// etc.) so we don't need to handle that here.
+    exchange_pane: ExchangePane,
+    /// List of all past requests for the current recipe/profile
+    history: History,
+    /// Modals for answering prompts that build requests
+    prompt_forms: ModalQueue<PromptForm>,
+
+    global_actions_emitter: Emitter<PrimaryMenuAction>,
+}
+
+impl PrimaryView {
+    pub fn new() -> Self {
+        let view = PersistentStore::get(&ViewStateKey).unwrap_or_default();
+
+        let recipe_list = RecipeList::new();
+        let (recipe_id, recipe_node_type) = recipe_list
+            .selected()
+            .map(|(id, node_type)| (Some(id), Some(node_type)))
+            .unwrap_or((None, None));
+        let recipe_detail = Self::build_recipe_detail(recipe_id);
+
+        let profile_list = ProfileList::new();
+        let profile_detail = ProfileDetail::new(profile_list.selected_id());
+
+        // We don't have the request store here and there aren't any requests
+        // loaded into it yet anyway, so we can't fill out the request yet.
+        // There will be a message to load it immediately after though
+        let exchange_pane = ExchangePane::new(None, recipe_node_type);
+
+        let history = History::new(
+            profile_list.selected_id().cloned(),
+            recipe_list.selected_recipe_id().cloned(),
+        );
+
+        Self {
+            id: ComponentId::default(),
+            view,
+
+            recipe_list,
+            recipe_detail,
+            profile_list,
+            profile_detail,
+            exchange_pane,
+            history,
+            prompt_forms: ModalQueue::default(),
+
+            global_actions_emitter: Default::default(),
+        }
+    }
+
+    /// Which recipe in the recipe list is selected? `None` iff the list is
+    /// empty OR a folder is selected.
+    pub fn selected_recipe_id(&self) -> Option<&RecipeId> {
+        self.recipe_list.selected_recipe_id()
+    }
+
+    /// ID of the selected profile. `None` iff the list is empty
+    pub fn selected_profile_id(&self) -> Option<&ProfileId> {
+        self.profile_list.selected_id()
+    }
+
+    /// ID of the selected request. `None` iff the list of requests is empty
+    pub fn selected_request_id(&self) -> Option<RequestId> {
+        self.history.selected_id()
+    }
+
+    fn selected_recipe_node(&self) -> Option<(&RecipeId, RecipeNodeType)> {
+        self.recipe_list.selected()
+    }
+
+    /// Get a definition of the request that should be sent from the current
+    /// recipe settings
+    pub fn request_config(&self) -> Option<RequestConfig> {
+        let profile_id = self.selected_profile_id().cloned();
+        let recipe_id = self.selected_recipe_id()?.clone();
+        let options = self.recipe_detail.build_options()?;
+        Some(RequestConfig {
+            profile_id,
+            recipe_id,
+            options,
+        })
+    }
+
+    /// Get a map of overridden profile fields
+    pub fn profile_overrides(&self) -> IndexMap<String, ValueTemplate> {
+        self.profile_detail.overrides()
+    }
+
+    /// Send a request for the currently selected recipe
+    fn send_request(&self) {
+        ViewContext::push_message(HttpMessage::Begin);
+    }
+
+    /// Refresh the recipe preview. Call this whenever the selected recipe *or*
+    /// profile changes
+    fn refresh_recipe(&mut self) {
+        let collection = ViewContext::collection();
+        let selected_recipe_node =
+            self.selected_recipe_node().and_then(|(id, _)| {
+                collection
+                    .recipes
+                    .try_get(id)
+                    .reported(&ViewContext::messages_tx())
+            });
+        self.recipe_detail = RecipeDetail::new(selected_recipe_node);
+    }
+
+    /// Update the UI to reflect the current state of an HTTP request
+    pub fn refresh_request(
+        &mut self,
+        store: &mut RequestStore,
+        disposition: RequestDisposition,
+    ) {
+        // Refresh history list. This has to happen first so the
+        // select_request() call below has access to the latest request
+        self.history.refresh(store);
+
+        match disposition {
+            RequestDisposition::Change(request_id) => {
+                // If the selected request was changed, rebuild state.
+                // Otherwise, we don't care about the change
+                if Some(request_id) == self.selected_request_id() {
+                    // If the request isn't in the store, that means it was just
+                    // deleted
+                    let state = store.get(request_id);
+                    self.set_request(state);
+                }
+            }
+            RequestDisposition::ChangeAll(request_ids) => {
+                // Check if the selected request changed
+                if let Some(request_id) = self.selected_request_id()
+                    && request_ids.contains(&request_id)
+                {
+                    // If the request isn't in the store, that means it was just
+                    // deleted
+                    let state = store.get(request_id);
+                    self.set_request(state);
+                }
+            }
+            RequestDisposition::Select(request_id) => {
+                let Some(state) = store.get(request_id) else {
+                    // If the request is not in the store, it can't be selected
+                    return;
+                };
+
+                // Select only if it matches the current recipe/profile
+                let selected_recipe_id = self.selected_recipe_id();
+                if state.profile_id() == self.selected_profile_id()
+                    && Some(state.recipe_id()) == selected_recipe_id
+                {
+                    self.history.select_request(state.id());
+                }
+            }
+            RequestDisposition::OpenPrompt {
+                recipe_id,
+                request_id,
+                prompt,
+            } => {
+                // Find the open form for this request, or open a new one
+                let form = if let Some(form) = self
+                    .prompt_forms
+                    .iter_mut()
+                    .find(|form| form.request_id() == request_id)
+                {
+                    form
+                } else {
+                    self.prompt_forms
+                        .open(PromptForm::new(&recipe_id, request_id))
+                };
+                form.add_prompt(prompt);
+            }
+        }
+    }
+
+    /// Update the Exchange pane with the selected request. Call this whenever
+    /// a new request is selected or the selected request changes.
+    fn set_request(&mut self, selected_request: Option<&RequestState>) {
+        self.exchange_pane = ExchangePane::new(
+            selected_request,
+            self.selected_recipe_node().map(|(_, node_type)| node_type),
+        );
+    }
+
+    fn build_recipe_detail(recipe_id: Option<&RecipeId>) -> RecipeDetail {
+        let collection = ViewContext::collection();
+        let node = recipe_id.and_then(|id| {
+            collection
+                .recipes
+                .try_get(id)
+                .reported(&ViewContext::messages_tx())
+        });
+        RecipeDetail::new(node)
+    }
+
+    /// Draw a sidebar pane
+    fn draw_sidebar(
+        &self,
+        canvas: &mut Canvas,
+        sidebar: Sidebar,
+        area: Rect,
+        selected: bool,
+    ) {
+        match sidebar {
+            Sidebar::Profile => canvas.draw(
+                &self.profile_list,
+                SidebarProps::list(),
+                area,
+                selected,
+            ),
+            Sidebar::Recipe => canvas.draw(
+                &self.recipe_list,
+                SidebarProps::list(),
+                area,
+                selected,
+            ),
+            Sidebar::History => {
+                canvas.draw(&self.history, (), area, selected);
+            }
+        }
+
+        // Draw toggle hotkey hint
+        let bottom_row = area.offset(Offset {
+            x: 1,
+            y: (area.height - 1).into(),
+        });
+        canvas.render_widget(
+            format!(
+                "Hide {binding}",
+                binding = ViewContext::binding_display(Action::ToggleSidebar),
+            ),
+            bottom_row,
+        );
+    }
+
+    /// Draw all boxes within the header area
+    fn draw_headers(
+        &self,
+        canvas: &mut Canvas,
+        headers: &[Header],
+        area: Rect,
+    ) {
+        let areas = Layout::horizontal(iter::repeat_n(
+            Constraint::Fill(1),
+            headers.len(),
+        ))
+        .spacing(Spacing::Overlap(1))
+        .split(area);
+
+        // Header
+        for (header, area) in headers.iter().zip(&*areas) {
+            let props = SidebarProps::header();
+            match header {
+                Header::Profile => {
+                    canvas.draw(&self.profile_list, props, *area, false);
+                }
+                Header::Recipe => {
+                    canvas.draw(&self.recipe_list, props, *area, false);
+                }
+            }
+        }
+    }
+}
+
+impl Component for PrimaryView {
+    fn id(&self) -> ComponentId {
+        self.id
+    }
+
+    fn update(
+        &mut self,
+        context: &mut UpdateContext,
+        event: Event,
+    ) -> EventMatch {
+        event
+            .m()
+            .click(|position, _| {
+                if self.recipe_detail.contains(context, position) {
+                    self.view.select_recipe_pane();
+                } else if self.profile_detail.contains(context, position) {
+                    self.view.select_profile_pane();
+                } else if self.exchange_pane.contains(context, position) {
+                    self.view.select_exchange_pane();
+                }
+            })
+            .action(|action, propagate| match action {
+                Action::PreviousPane => self.view.previous_pane(),
+                Action::NextPane => self.view.next_pane(),
+                // Send a request from anywhere
+                Action::Submit => self.send_request(),
+
+                // Pane hotkeys
+                Action::History => self.view.open_sidebar(Sidebar::History),
+                Action::ProfileList => self.view.open_sidebar(Sidebar::Profile),
+                Action::RecipeList => self.view.open_sidebar(Sidebar::Recipe),
+                Action::ToggleSidebar => self.view.toggle_sidebar(),
+                Action::TopPane => self.view.select_top_pane(),
+                Action::BottomPane => self.view.select_bottom_pane(),
+
+                // Toggle fullscreen
+                Action::Fullscreen => self.view.toggle_fullscreen(),
+                // Exit fullscreen
+                Action::Cancel if self.view.is_fullscreen() => {
+                    self.view.exit_fullscreen();
+                }
+
+                Action::ResizeBack => self.view.resize_back(),
+                Action::ResizeForward => self.view.resize_forward(),
+
+                _ => propagate.set(),
+            })
+            .broadcast(|event| match event {
+                // Refresh previews when selected profile/recipe changes
+                BroadcastEvent::SelectedProfile(_) => {
+                    // Both panes can change when the profile changes
+                    self.profile_detail =
+                        ProfileDetail::new(self.profile_list.selected_id());
+                    self.refresh_recipe();
+                }
+                BroadcastEvent::SelectedRecipe(_) => self.refresh_recipe(),
+                BroadcastEvent::SelectedRequest(request_id) => {
+                    // When a new request is selected, make sure it's loaded
+                    // from the DB, then put it in the Exchange pane
+                    let state = request_id.and_then(|id| {
+                        context
+                            .request_store
+                            .load(id)
+                            .reported(&ViewContext::messages_tx())
+                            .flatten()
+                    });
+                    self.set_request(state);
+                }
+                BroadcastEvent::RefreshPreviews => {}
+            })
+            .emitted(self.recipe_list.to_emitter(), |event| match event {
+                SidebarEvent::Open => {
+                    self.view.open_sidebar(Sidebar::Recipe);
+                }
+                SidebarEvent::Reset => self.view.reset_sidebar(),
+            })
+            .emitted(self.profile_list.to_emitter(), |event| match event {
+                SidebarEvent::Open => {
+                    self.view.open_sidebar(Sidebar::Profile);
+                }
+                SidebarEvent::Reset => self.view.reset_sidebar(),
+            })
+            .emitted(self.history.to_emitter(), |event| match event {
+                SidebarEvent::Open => {
+                    self.view.open_sidebar(Sidebar::History);
+                }
+                SidebarEvent::Reset => self.view.reset_sidebar(),
+            })
+            // Handle our own menu action type
+            .emitted(self.global_actions_emitter, |menu_action| {
+                match menu_action {
+                    PrimaryMenuAction::EditCollection(location) => {
+                        // Forward to the main loop so it can open the editor
+                        ViewContext::push_message(Message::CollectionEdit {
+                            location,
+                        });
+                    }
+                }
+            })
+    }
+
+    fn menu(&self) -> Vec<MenuItem> {
+        let emitter = self.global_actions_emitter;
+        let collection = ViewContext::collection();
+        let selected_recipe_node = self
+            .selected_recipe_node()
+            .and_then(|(id, _)| collection.recipes.get(id));
+        let edit_recipe = match selected_recipe_node {
+            None => emitter.menu(
+                PrimaryMenuAction::EditCollection(None),
+                "Edit Collection",
+            ),
+            Some(RecipeNode::Folder(folder)) => emitter.menu(
+                PrimaryMenuAction::EditCollection(Some(
+                    folder.location.clone(),
+                )),
+                "Edit Folder",
+            ),
+            Some(RecipeNode::Recipe(recipe)) => emitter.menu(
+                PrimaryMenuAction::EditCollection(Some(
+                    recipe.location.clone(),
+                )),
+                "Edit Recipe",
+            ),
+        };
+        let profile_location = self.selected_profile_id().and_then(|id| {
+            let profile = collection.profiles.get(id)?;
+            Some(&profile.location)
+        });
+        let edit_profile = emitter
+            .menu(
+                PrimaryMenuAction::EditCollection(profile_location.cloned()),
+                "Edit Profile",
+            )
+            .enable(profile_location.is_some());
+
+        vec![edit_recipe.into(), edit_profile.into()]
+    }
+
+    fn persist(&self, store: &mut PersistentStore) {
+        store.set(&ViewStateKey, &self.view);
+    }
+
+    fn children(&mut self) -> Vec<Child<'_>> {
+        vec![
+            self.prompt_forms.to_child(), // Modal first - high priority
+            self.recipe_list.to_child(),
+            self.recipe_detail.to_child(),
+            self.profile_list.to_child(),
+            self.profile_detail.to_child(),
+            self.exchange_pane.to_child(),
+            self.history.to_child(),
+        ]
+    }
+}
+
+impl Draw for PrimaryView {
+    fn draw(&self, canvas: &mut Canvas, (): (), metadata: DrawMetadata) {
+        for pane in self.view.layout(metadata.area()) {
+            let PaneArea {
+                pane,
+                selected,
+                area,
+            } = pane;
+            match pane {
+                VisiblePane::Recipe => {
+                    canvas.draw(&self.recipe_detail, (), area, selected);
+                }
+                VisiblePane::Exchange => {
+                    canvas.draw(&self.exchange_pane, (), area, selected);
+                }
+                VisiblePane::Profile => {
+                    canvas.draw(&self.profile_detail, (), area, selected);
+                }
+                VisiblePane::Sidebar(sidebar) => {
+                    self.draw_sidebar(canvas, sidebar, area, selected);
+                }
+                VisiblePane::Headers(headers) => {
+                    self.draw_headers(canvas, headers, area);
+                }
+            }
+        }
+
+        // Modal last so it goes on top. It gets the full screen
+        canvas.draw(&self.prompt_forms, (), canvas.area(), true);
+    }
+}
+
+/// Persistent key for [ViewState]
+#[derive(Debug, Serialize)]
+struct ViewStateKey;
+
+impl PersistentKey for ViewStateKey {
+    type Value = ViewState;
+}
+
+/// Menu actions available in all contexts
+#[derive(Clone, Debug)]
+enum PrimaryMenuAction {
+    /// Open the collection file in an external editor, jumping to the
+    /// specified location (if any)
+    EditCollection(Option<SourceLocation>),
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        http::RequestConfig,
+        message::{Message, RecipeCopyTarget},
+        view::test_util::{TestComponent, TestHarness, harness},
+    };
+    use pretty_assertions::assert_eq;
+    use rstest::rstest;
+    use slumber_core::http::BuildOptions;
+    use slumber_util::assert_matches;
+    use terminput::KeyCode;
+
+    /// Test various workflows that modify the layout
+    #[rstest]
+    #[case::submit_sidebar(
+        // Open profile sidebar, then close it
+        &[KeyCode::Char('p'), KeyCode::Enter],
+        vec![
+            PaneArea {
+                pane: VisiblePane::Headers(&[Header::Profile]),
+                area: Rect::new(29, 0, 21, 3),
+                selected: false,
+            },
+            PaneArea {
+                pane: VisiblePane::Recipe,
+                area: Rect::new(29, 2, 21, 25),
+                selected: false,
+            },
+            PaneArea {
+                pane: VisiblePane::Exchange,
+                area: Rect::new(29, 26, 21, 24),
+                selected: false,
+            },
+            PaneArea {
+                pane: VisiblePane::Sidebar(Sidebar::Recipe),
+                area: Rect::new(0, 0, 30, 50),
+                selected: true,
+            },
+        ],
+    )]
+    #[case::cancel_sidebar(
+        // Functionally the same as submitting the sidebar
+        &[KeyCode::Char('p'), KeyCode::Esc],
+        vec![
+            PaneArea {
+                pane: VisiblePane::Headers(&[Header::Profile]),
+                area: Rect::new(29, 0, 21, 3),
+                selected: false,
+            },
+            PaneArea {
+                pane: VisiblePane::Recipe,
+                area: Rect::new(29, 2, 21, 25),
+                selected: false,
+            },
+            PaneArea {
+                pane: VisiblePane::Exchange,
+                area: Rect::new(29, 26, 21, 24),
+                selected: false,
+            },
+            PaneArea {
+                pane: VisiblePane::Sidebar(Sidebar::Recipe),
+                area: Rect::new(0, 0, 30, 50),
+                selected: true,
+            },
+        ],
+    )]
+    #[case::fullscreen_exchange_after_profile(
+        // There was a bug where this would fullscreen the Profile pane instead
+        &[
+            KeyCode::Char('p'), // Open profile list
+            KeyCode::Enter, // Close profile list
+            KeyCode::Char('2'), // Select Exchange pane
+            KeyCode::Char('f'), // Fullscreen it
+        ],
+        // Exchange pane should be fullscreened
+        vec![PaneArea {
+            pane: VisiblePane::Exchange,
+            area: Rect::new(0, 0, 50, 50),
+            selected: true,
+        }]
+    )]
+    fn test_layout_transitions(
+        mut harness: TestHarness,
+        #[case] keys: &[KeyCode],
+        #[case] expected: Vec<PaneArea>,
+    ) {
+        let mut component = create_component(&mut harness);
+        component
+            .int(&mut harness)
+            .send_keys(keys.to_owned())
+            .assert()
+            .empty();
+        let area = Rect {
+            width: 50,
+            height: 50,
+            x: 0,
+            y: 0,
+        };
+        assert_eq!(component.view.layout(area), expected);
+    }
+
+    /// Test selected pane and fullscreen mode loading from persistence
+    #[rstest]
+    fn test_pane_persistence(mut harness: TestHarness) {
+        let mut view = ViewState::default();
+        view.select_exchange_pane();
+        view.toggle_fullscreen();
+        harness.set_persistent(&ViewStateKey, &view);
+
+        let component = create_component(&mut harness);
+        assert_eq!(component.view, view);
+    }
+
+    /// Test the request_config() getter
+    #[rstest]
+    fn test_request_config(mut harness: TestHarness) {
+        let component = create_component(&mut harness);
+        let expected_config = RequestConfig {
+            recipe_id: harness.collection.first_recipe_id().clone(),
+            profile_id: Some(harness.collection.first_profile_id().clone()),
+            options: BuildOptions::default(),
+        };
+        assert_eq!(component.request_config(), Some(expected_config));
+    }
+
+    /// Test "Edit Recipe" action
+    #[rstest]
+    fn test_edit_recipe(mut harness: TestHarness) {
+        let mut component = create_component(&mut harness);
+        component.int(&mut harness).drain_draw().assert().empty();
+        harness.messages_rx().clear(); // Clear init junk
+        let expected_location =
+            harness.collection.first_recipe().location.clone();
+
+        // Event should be converted into a message appropriately
+        let location = assert_matches!(
+            component
+                .int(&mut harness)
+                .action(&["Edit Recipe"])
+                .into_propagated(),
+            [Message::CollectionEdit { location: Some(location) }] => location
+        );
+        assert_eq!(location, expected_location);
+    }
+
+    /// Test "Edit Profile" action
+    #[rstest]
+    fn test_edit_profile(mut harness: TestHarness) {
+        let mut component = create_component(&mut harness);
+        component.int(&mut harness).drain_draw().assert().empty();
+        harness.messages_rx().clear(); // Clear init junk
+        let expected_location =
+            harness.collection.first_profile().location.clone();
+
+        // Event should be converted into a message appropriately
+        let location = assert_matches!(
+            component
+                .int(&mut harness)
+                .action(&["Edit Profile"])
+                .into_propagated(),
+            [Message::CollectionEdit { location: Some(location) }] => location
+        );
+        assert_eq!(location, expected_location);
+    }
+
+    /// Test actions under the "Export as" submenu. This should be available in
+    /// both the recipe list and recipe detail pane
+    #[rstest]
+    #[case::cli("CLI", RecipeCopyTarget::Cli)]
+    #[case::curl("cURL", RecipeCopyTarget::Curl)]
+    #[case::python("Python", RecipeCopyTarget::Python)]
+    fn test_export_action(
+        mut harness: TestHarness,
+        #[case] label: &str,
+        #[case] expected_target: RecipeCopyTarget,
+    ) {
+        let mut component = create_component(&mut harness);
+
+        let actual_target = assert_matches!(
+            component
+                .int(&mut harness)
+                .send_key(KeyCode::Char('1')) // Select recipe detail
+                .action(&["Export as", label])
+                .into_propagated(),
+            [Message::CopyRecipe(target)] => target
+        );
+        assert_eq!(actual_target, expected_target);
+
+        let actual_target = assert_matches!(
+            component
+                .int(&mut harness)
+                .send_key(KeyCode::Char('r')) // Select recipe list
+                .action(&["Export as", label])
+                .into_propagated(),
+            [Message::CopyRecipe(target)] => target
+        );
+        assert_eq!(actual_target, expected_target);
+    }
+
+    /// Create component to be tested
+    fn create_component(
+        harness: &mut TestHarness,
+    ) -> TestComponent<PrimaryView> {
+        let recipe_id = harness.collection.first_recipe_id().clone();
+        let profile_id = harness.collection.first_profile_id().clone();
+        let mut component = TestComponent::new(harness, PrimaryView::new());
+        component.int(harness).assert().broadcast([
+            BroadcastEvent::SelectedRecipe(Some(recipe_id)),
+            BroadcastEvent::SelectedProfile(Some(profile_id)),
+            // Two events above each trigger a request selection
+            BroadcastEvent::SelectedRequest(None),
+            BroadcastEvent::SelectedRequest(None),
+        ]);
+        // Clear template preview messages so we can test what we want
+        harness.messages_rx().clear();
+        component
+    }
+}
